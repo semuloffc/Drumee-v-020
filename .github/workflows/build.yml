@@ -1,0 +1,65 @@
+name: Build Drumee
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            vst3_path: build/Drumee_artefacts/Release/VST3
+          - os: macos-latest
+            name: macOS
+            vst3_path: build/Drumee_artefacts/Release/VST3
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux/macOS deps
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        run: cmake -B build -G "Ninja Multi-Config" -DCMAKE_BUILD_TYPE=Release
+        if: runner.os == 'macOS'
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -B build
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -r "${{ matrix.vst3_path }}" dist/
+          cd dist
+          7z a -tzip "Drumee-${{ matrix.name }}-${{ github.sha }}.zip" VST3 || zip -r "Drumee-${{ matrix.name }}-${{ github.sha }}.zip" VST3
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Drumee-${{ matrix.name }}
+          path: dist/Drumee-${{ matrix.name }}-${{ github.sha }}.zip
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Drumee-${{ matrix.name }}-${{ github.sha }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
