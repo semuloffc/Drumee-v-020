@@ -107,7 +107,7 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
     // setSize() triggers resized() synchronously, so it must come after every
     // child component (encoders, visualizer, sample slots) has been created -
     // otherwise resized() dereferences still-null pointers and crashes.
-    setSize(1040, 820);
+    setSize(1280, 720);
 }
 
 DrumeeAudioProcessorEditor::~DrumeeAudioProcessorEditor()
@@ -124,7 +124,7 @@ namespace
     constexpr int kMargin = 16;
     constexpr int kTopBarHeight = 48;
     constexpr int kSideColumnWidth = 230;
-    constexpr int kSampleRowHeight = 148;
+    constexpr int kSampleRowHeight = 130;
 }
 
 void DrumeeAudioProcessorEditor::paint(juce::Graphics& g)
@@ -203,7 +203,7 @@ void DrumeeAudioProcessorEditor::resized()
     timingCardBounds = leftColumn;
     chaosCardBounds = rightColumn;
 
-    constexpr int encoderHeight = 140;
+    constexpr int encoderHeight = 120;
     constexpr int encoderGap = 14;
 
     // Section label stays pinned near the top of its card; the knob group
