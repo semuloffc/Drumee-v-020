@@ -57,27 +57,38 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
     float nudge = apvts.getRawParameterValue(ParamIDs::nudge)->load();
     float swing = apvts.getRawParameterValue(ParamIDs::swing)->load();
     float humanize = apvts.getRawParameterValue(ParamIDs::humanize)->load();
-    float pitchRand = apvts.getRawParameterValue(ParamIDs::pitchRand)->load();
-    float decay = apvts.getRawParameterValue(ParamIDs::decay)->load();
-    float velocity = apvts.getRawParameterValue(ParamIDs::velocity)->load();
     float ratchet = apvts.getRawParameterValue(ParamIDs::ratchet)->load();
     float probability = apvts.getRawParameterValue(ParamIDs::probability)->load();
-    float masterVolume = apvts.getRawParameterValue(ParamIDs::masterVol)->load();
+
+    // Pitch & Sound is now per-sample: each track has its own Pitch Rand,
+    // Decay, Velocity and Volume, set from that sample's own window.
+    std::array<float, kNumTracks> pitchRand {};
+    std::array<float, kNumTracks> velocity {};
+    std::array<float, kNumTracks> decay {};
+    std::array<float, kNumTracks> volume {};
+
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        pitchRand[(size_t) t] = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::pitchRand, t))->load();
+        decay[(size_t) t]     = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::decay, t))->load();
+        velocity[(size_t) t]  = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::velocity, t))->load();
+        volume[(size_t) t]    = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::volume, t))->load();
+    }
 
     double outputSampleRate = getSampleRate();
     auto& tracksRef = tracks;
 
     sequencer.process(buffer.getNumSamples(), hostBpm, hostIsPlaying,
                        nudge, swing, humanize, pitchRand, velocity, ratchet, probability,
-                       [&tracksRef, outputSampleRate, decay](int track, int sampleOffset, float vel, float pitchOffset)
+                       [&tracksRef, outputSampleRate, &decay, &volume](int track, int sampleOffset, float vel, float pitchOffset)
                        {
-                           tracksRef[(size_t) track].trigger(outputSampleRate, pitchOffset, vel, decay, sampleOffset);
+                           float trackGain = vel * volume[(size_t) track];
+                           tracksRef[(size_t) track].trigger(outputSampleRate, pitchOffset, trackGain,
+                                                              decay[(size_t) track], sampleOffset);
                        });
 
     for (auto& track : tracks)
         track.renderNextBlock(buffer, 0, buffer.getNumSamples());
-
-    buffer.applyGain(masterVolume);
 }
 
 juce::AudioProcessorEditor* DrumeeAudioProcessor::createEditor()

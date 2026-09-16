@@ -96,7 +96,10 @@ private:
 class SampleSlotComponent : public juce::Component, public juce::FileDragAndDropTarget
 {
 public:
-    SampleSlotComponent(int trackIndex, SampleTrack& trackToUse);
+    // compact = the small card used in the main window's bottom row.
+    // The larger (non-compact) layout is used inside a sample's own window,
+    // where there is room to show the file status on its own line.
+    SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact = true);
 
     void resized() override;
     void paint(juce::Graphics&) override;
@@ -109,14 +112,59 @@ public:
 
     std::function<void(int)> onLoadRequested;
     std::function<void(int, const juce::File&)> onFileDropped;
+    std::function<void(int)> onEditRequested;   // main-screen card only
 
 private:
     bool isAcceptableFile(const juce::File& file) const;
 
     int index;
     SampleTrack& track;
+    bool isCompact;
     juce::TextButton loadButton;
+    juce::TextButton editButton;
     juce::Label nameLabel;
     juce::Label statusLabel;
     bool isDragHover = false;
+};
+
+// ---------------------------------------------------------------------------
+// Sample window: one independent, per-sample settings window holding that
+// sample's file slot plus its own unique PITCH & SOUND controls (Pitch Rand,
+// Decay, Velocity, Volume). Opened from the main screen's sample card.
+// ---------------------------------------------------------------------------
+class SampleEditorContent : public juce::Component
+{
+public:
+    SampleEditorContent(int trackIndex, juce::AudioProcessorValueTreeState& state, SampleTrack& trackToUse);
+
+    void resized() override;
+    void paint(juce::Graphics&) override;
+    void refresh();
+
+    std::function<void(int)> onLoadRequested;
+    std::function<void(int, const juce::File&)> onFileDropped;
+
+private:
+    juce::Label sampleNameLabel;
+    juce::Label sectionPitch { {}, "PITCH & SOUND" };
+    std::unique_ptr<SampleSlotComponent> slot;
+    std::vector<std::unique_ptr<Encoder>> encoders;
+};
+
+class SampleEditorWindow : public juce::DocumentWindow
+{
+public:
+    // lookAndFeel must outlive this window (owned by the main editor) - a
+    // DocumentWindow is a separate top-level window and does not inherit
+    // the editor's LookAndFeel automatically, so it is applied explicitly
+    // here to keep the sample window on the same palette/typography.
+    SampleEditorWindow(int trackIndex, juce::AudioProcessorValueTreeState& state,
+                        SampleTrack& trackToUse, juce::LookAndFeel& lookAndFeelToUse);
+    ~SampleEditorWindow() override;
+
+    void closeButtonPressed() override;
+    SampleEditorContent& getContent() { return *content; }
+
+private:
+    SampleEditorContent* content = nullptr;
 };

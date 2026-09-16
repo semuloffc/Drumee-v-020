@@ -207,11 +207,11 @@ void StepSequencerVisualizer::timerCallback()
     }
 }
 
-SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse)
-    : index(trackIndex), track(trackToUse)
+SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact)
+    : index(trackIndex), track(trackToUse), isCompact(compact)
 {
     nameLabel.setJustificationType(juce::Justification::centredLeft);
-    nameLabel.setFont(juce::Font(14.0f, juce::Font::bold));
+    nameLabel.setFont(juce::Font(compact ? 14.0f : 16.0f, juce::Font::bold));
     nameLabel.setColour(juce::Label::textColourId, DrumeeColours::textPrimary);
     addAndMakeVisible(nameLabel);
 
@@ -224,16 +224,44 @@ SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse
     loadButton.onClick = [this] { if (onLoadRequested) onLoadRequested(index); };
     addAndMakeVisible(loadButton);
 
+    if (isCompact)
+    {
+        editButton.setButtonText("Edit");
+        editButton.onClick = [this] { if (onEditRequested) onEditRequested(index); };
+        addAndMakeVisible(editButton);
+    }
+
     refresh();
 }
 
 void SampleSlotComponent::resized()
 {
-    auto bounds = getLocalBounds().reduced(8);
-    loadButton.setBounds(bounds.removeFromRight(64).reduced(0, 8));
-    bounds.removeFromRight(6);
-    nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
-    statusLabel.setBounds(bounds);
+    if (isCompact)
+    {
+        // Card layout for the main screen: accent tab (painted) + name/status
+        // stacked on top, a Load/Edit button row along the bottom.
+        auto bounds = getLocalBounds().reduced(10, 8);
+        bounds.removeFromLeft(6); // room for the painted accent tab
+
+        auto buttonRow = bounds.removeFromBottom(26);
+        loadButton.setBounds(buttonRow.removeFromLeft((buttonRow.getWidth() - 6) / 2));
+        buttonRow.removeFromLeft(6);
+        editButton.setBounds(buttonRow);
+
+        bounds.removeFromBottom(6);
+        nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
+        statusLabel.setBounds(bounds);
+    }
+    else
+    {
+        // Wide, single-row layout for use inside a sample's own window.
+        auto bounds = getLocalBounds().reduced(10, 8);
+        bounds.removeFromLeft(6);
+        loadButton.setBounds(bounds.removeFromRight(84).reduced(0, 10));
+        bounds.removeFromRight(8);
+        nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
+        statusLabel.setBounds(bounds);
+    }
 }
 
 void SampleSlotComponent::paint(juce::Graphics& g)
@@ -301,4 +329,111 @@ void SampleSlotComponent::filesDropped(const juce::StringArray& files, int, int)
     }
 
     repaint();
+}
+
+// ---------------------------------------------------------------------------
+// SampleEditorContent
+// ---------------------------------------------------------------------------
+SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorValueTreeState& state, SampleTrack& trackToUse)
+{
+    sampleNameLabel.setText(trackToUse.name, juce::dontSendNotification);
+    sampleNameLabel.setFont(juce::Font(20.0f, juce::Font::bold));
+    sampleNameLabel.setColour(juce::Label::textColourId, DrumeeColours::textPrimary);
+    sampleNameLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(sampleNameLabel);
+
+    slot = std::make_unique<SampleSlotComponent>(trackIndex, trackToUse, false);
+    slot->onLoadRequested = [this](int t) { if (onLoadRequested) onLoadRequested(t); };
+    slot->onFileDropped = [this](int t, const juce::File& f) { if (onFileDropped) onFileDropped(t, f); };
+    addAndMakeVisible(*slot);
+
+    sectionPitch.setJustificationType(juce::Justification::centredLeft);
+    sectionPitch.setFont(juce::Font(12.0f, juce::Font::bold));
+    sectionPitch.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
+    addAndMakeVisible(sectionPitch);
+
+    for (auto& info : getPitchSoundParamInfoForTrack(trackIndex))
+    {
+        auto encoder = std::make_unique<Encoder>(state, info);
+        addAndMakeVisible(*encoder);
+        encoders.push_back(std::move(encoder));
+    }
+}
+
+void SampleEditorContent::refresh()
+{
+    if (slot != nullptr)
+        slot->refresh();
+}
+
+void SampleEditorContent::resized()
+{
+    constexpr int margin = 20;
+    auto bounds = getLocalBounds().reduced(margin);
+
+    sampleNameLabel.setBounds(bounds.removeFromTop(28));
+    bounds.removeFromTop(10);
+
+    slot->setBounds(bounds.removeFromTop(66));
+    bounds.removeFromTop(18);
+
+    sectionPitch.setBounds(bounds.removeFromTop(20));
+    bounds.removeFromTop(8);
+
+    // 2x2 grid of Pitch & Sound encoders, filling the remaining space.
+    auto grid = bounds;
+    int colWidth = grid.getWidth() / 2;
+    int rowHeight = grid.getHeight() / 2;
+    for (size_t i = 0; i < encoders.size(); ++i)
+    {
+        int row = (int) i / 2;
+        int col = (int) i % 2;
+        juce::Rectangle<int> cell(grid.getX() + col * colWidth, grid.getY() + row * rowHeight, colWidth, rowHeight);
+        encoders[i]->setBounds(cell.reduced(10));
+    }
+}
+
+void SampleEditorContent::paint(juce::Graphics& g)
+{
+    g.fillAll(DrumeeColours::background);
+
+    constexpr int margin = 20;
+    auto bounds = getLocalBounds().reduced(margin);
+    bounds.removeFromTop(28 + 10 + 66 + 18 + 20 + 8);
+
+    // Card behind the encoder grid, matching the panel look used elsewhere
+    // in the plugin (step grid, sample slots).
+    g.setColour(DrumeeColours::panel);
+    g.fillRoundedRectangle(bounds.toFloat(), 6.0f);
+    g.setColour(DrumeeColours::outline);
+    g.drawRoundedRectangle(bounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
+}
+
+// ---------------------------------------------------------------------------
+// SampleEditorWindow
+// ---------------------------------------------------------------------------
+SampleEditorWindow::SampleEditorWindow(int trackIndex, juce::AudioProcessorValueTreeState& state,
+                                        SampleTrack& trackToUse, juce::LookAndFeel& lookAndFeelToUse)
+    : juce::DocumentWindow(trackToUse.name + " — Sample", DrumeeColours::background, juce::DocumentWindow::closeButton)
+{
+    setLookAndFeel(&lookAndFeelToUse);
+    setUsingNativeTitleBar(true);
+    setResizable(false, false);
+
+    content = new SampleEditorContent(trackIndex, state, trackToUse);
+    content->setSize(380, 460);
+    setContentOwned(content, true); // resizes the window itself to fit content + title bar
+}
+
+SampleEditorWindow::~SampleEditorWindow()
+{
+    setLookAndFeel(nullptr);
+}
+
+void SampleEditorWindow::closeButtonPressed()
+{
+    // The sample window is a persistent settings panel for that sample, not
+    // a one-shot dialog - hide it instead of destroying it so its state
+    // (and screen position) survives being closed and reopened.
+    setVisible(false);
 }

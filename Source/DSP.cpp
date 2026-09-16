@@ -116,8 +116,9 @@ void Sequencer::reset()
 
 void Sequencer::process(int numSamples, double bpm, bool isPlaying,
                          float nudgeMs, float swingPct, float humanizePct,
-                         float pitchRandSt, float velocityDepth, float ratchetAmount,
-                         float probabilityPct, const TriggerCallback& callback)
+                         const std::array<float, kNumTracks>& pitchRandSt,
+                         const std::array<float, kNumTracks>& velocityDepth,
+                         float ratchetAmount, float probabilityPct, const TriggerCallback& callback)
 {
     if (! isPlaying || bpm <= 0.0)
     {
@@ -172,8 +173,10 @@ void Sequencer::process(int numSamples, double bpm, bool isPlaying,
 
 void Sequencer::fireStep(int step, int offsetInBlock, double samplesPerStep,
                           float nudgeMs, float swingPct, float humanizePct,
-                          float pitchRandSt, float velocityDepth, float ratchetAmount,
-                          float probabilityPct, int blockSize, const TriggerCallback& callback)
+                          const std::array<float, kNumTracks>& pitchRandSt,
+                          const std::array<float, kNumTracks>& velocityDepth,
+                          float ratchetAmount, float probabilityPct,
+                          int blockSize, const TriggerCallback& callback)
 {
     stepFlash[step] = true;
 
@@ -194,17 +197,20 @@ void Sequencer::fireStep(int step, int offsetInBlock, double samplesPerStep,
         int ratchetCount = juce::jlimit(1, 4, (int) std::round(ratchetAmount));
         double subStep = samplesPerStep / (double) ratchetCount;
 
+        float trackPitchRand = pitchRandSt[(size_t) track];
+        float trackVelocityDepth = velocityDepth[(size_t) track];
+
         for (int r = 0; r < ratchetCount; ++r)
         {
             double pos = (double) offsetInBlock + totalOffset + subStep * (double) r;
             int samplePos = juce::jlimit(0, blockSize - 1, (int) std::round(pos));
 
-            float pitchOffset = pitchRandSt > 0.0f
-                ? (random.nextFloat() * 2.0f - 1.0f) * pitchRandSt
+            float pitchOffset = trackPitchRand > 0.0f
+                ? (random.nextFloat() * 2.0f - 1.0f) * trackPitchRand
                 : 0.0f;
 
             float baseVelocity = pattern[step].velocity[track];
-            float velocity = juce::jmap(velocityDepth / 100.0f, 0.0f, 1.0f, 1.0f, baseVelocity);
+            float velocity = juce::jmap(trackVelocityDepth / 100.0f, 0.0f, 1.0f, 1.0f, baseVelocity);
             velocity = juce::jlimit(0.05f, 1.0f, velocity - (float) r * 0.08f);
 
             callback(track, samplePos, velocity, pitchOffset);

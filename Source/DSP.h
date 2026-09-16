@@ -63,10 +63,15 @@ public:
 
     void prepare(double sampleRate);
     void reset();
+    // pitchRandSt and velocityDepth are now per-track (one Pitch & Sound
+    // setting per sample, configured in that sample's own window) instead
+    // of a single global value applied to every track.
     void process(int numSamples, double bpm, bool isPlaying,
                  float nudgeMs, float swingPct, float humanizePct,
-                 float pitchRandSt, float velocityDepth, float ratchetAmount,
-                 float probabilityPct, const TriggerCallback& callback);
+                 const std::array<float, kNumTracks>& pitchRandSt,
+                 const std::array<float, kNumTracks>& velocityDepth,
+                 float ratchetAmount, float probabilityPct,
+                 const TriggerCallback& callback);
 
 private:
     double sampleRate = 44100.0;
@@ -76,6 +81,8 @@ private:
 
     void fireStep(int step, int offsetInBlock, double samplesPerStep,
                   float nudgeMs, float swingPct, float humanizePct,
-                  float pitchRandSt, float velocityDepth, float ratchetAmount,
-                  float probabilityPct, int blockSize, const TriggerCallback& callback);
+                  const std::array<float, kNumTracks>& pitchRandSt,
+                  const std::array<float, kNumTracks>& velocityDepth,
+                  float ratchetAmount, float probabilityPct,
+                  int blockSize, const TriggerCallback& callback);
 };

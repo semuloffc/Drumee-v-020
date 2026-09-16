@@ -44,7 +44,10 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
     };
     addAndMakeVisible(newButton);
 
-    for (auto* label : { &sectionTiming, &sectionPitch, &sectionChaos })
+    // PITCH & SOUND no longer has a section on the main screen - it moved
+    // into each sample's own window. Only Timing/Groove and Ratchet/Chaos
+    // remain here, plus a small header over the sample row.
+    for (auto* label : { &sectionTiming, &sectionChaos, &sectionSamples })
     {
         label->setJustificationType(juce::Justification::centredLeft);
         label->setFont(juce::Font(12.0f, juce::Font::bold));
@@ -64,16 +67,39 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
 
     for (int i = 0; i < kNumTracks; ++i)
     {
-        auto slot = std::make_unique<SampleSlotComponent>(i, processor.tracks[(size_t) i]);
+        auto slot = std::make_unique<SampleSlotComponent>(i, processor.tracks[(size_t) i], true);
         slot->onLoadRequested = [this](int trackIndex) { loadSample(trackIndex); };
         slot->onFileDropped = [this](int trackIndex, const juce::File& file)
         {
             if (processor.loadSampleForTrack(trackIndex, file)
                 && trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
+            {
                 sampleSlots[(size_t) trackIndex]->refresh();
+                if (sampleWindows[(size_t) trackIndex] != nullptr)
+                    sampleWindows[(size_t) trackIndex]->getContent().refresh();
+            }
         };
+        slot->onEditRequested = [this](int trackIndex) { openSampleWindow(trackIndex); };
         addAndMakeVisible(*slot);
         sampleSlots.push_back(std::move(slot));
+    }
+
+    // Create every sample's own window up front (hidden). Each one owns a
+    // unique, independent set of PITCH & SOUND controls for that sample.
+    for (int i = 0; i < kNumTracks; ++i)
+    {
+        auto window = std::make_unique<SampleEditorWindow>(i, processor.apvts, processor.tracks[(size_t) i], lookAndFeel);
+        window->getContent().onLoadRequested = [this](int trackIndex) { loadSample(trackIndex); };
+        window->getContent().onFileDropped = [this](int trackIndex, const juce::File& file)
+        {
+            if (processor.loadSampleForTrack(trackIndex, file) && trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
+            {
+                sampleSlots[(size_t) trackIndex]->refresh();
+                if (sampleWindows[(size_t) trackIndex] != nullptr)
+                    sampleWindows[(size_t) trackIndex]->getContent().refresh();
+            }
+        };
+        sampleWindows[(size_t) i] = std::move(window);
     }
 
     refreshPresetList();
@@ -81,7 +107,7 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
     // setSize() triggers resized() synchronously, so it must come after every
     // child component (encoders, visualizer, sample slots) has been created -
     // otherwise resized() dereferences still-null pointers and crashes.
-    setSize(960, 540);
+    setSize(1040, 820);
 }
 
 DrumeeAudioProcessorEditor::~DrumeeAudioProcessorEditor()
@@ -97,6 +123,8 @@ namespace
     // drifting out from under the title/buttons in the old build).
     constexpr int kMargin = 16;
     constexpr int kTopBarHeight = 48;
+    constexpr int kSideColumnWidth = 230;
+    constexpr int kSampleRowHeight = 148;
 }
 
 void DrumeeAudioProcessorEditor::paint(juce::Graphics& g)
@@ -109,6 +137,15 @@ void DrumeeAudioProcessorEditor::paint(juce::Graphics& g)
     auto headerBounds = getLocalBounds().reduced(kMargin).removeFromTop(kTopBarHeight);
     g.setColour(DrumeeColours::panel);
     g.fillRoundedRectangle(headerBounds.toFloat(), 6.0f);
+
+    // Card panels behind the Timing/Groove and Ratchet/Chaos knob groups,
+    // matching the panel treatment used by the step grid and sample cards.
+    g.setColour(DrumeeColours::panel);
+    g.fillRoundedRectangle(timingCardBounds.toFloat(), 6.0f);
+    g.fillRoundedRectangle(chaosCardBounds.toFloat(), 6.0f);
+    g.setColour(DrumeeColours::outline);
+    g.drawRoundedRectangle(timingCardBounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
+    g.drawRoundedRectangle(chaosCardBounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
 }
 
 void DrumeeAudioProcessorEditor::resized()
@@ -127,61 +164,79 @@ void DrumeeAudioProcessorEditor::resized()
 
     bounds.removeFromTop(10);
 
-    auto bottomBar = bounds.removeFromBottom(74);
-    int slotWidth = bottomBar.getWidth() / kNumTracks;
+    // Bottom row: SAMPLES header + the five sample cards. Each card now
+    // also carries an Edit button that opens that sample's own window.
+    auto samplesArea = bounds.removeFromBottom(kSampleRowHeight);
+    sectionSamples.setBounds(samplesArea.removeFromTop(20));
+    samplesArea.removeFromTop(6);
+
+    int slotGap = 10;
+    int slotWidth = (samplesArea.getWidth() - slotGap * (kNumTracks - 1)) / kNumTracks;
     for (auto& slot : sampleSlots)
     {
-        slot->setBounds(bottomBar.removeFromLeft(slotWidth).reduced(4));
+        slot->setBounds(samplesArea.removeFromLeft(slotWidth));
+        samplesArea.removeFromLeft(slotGap);
     }
 
-    bounds.removeFromBottom(10);
+    bounds.removeFromBottom(14);
 
-    auto leftColumn = bounds.removeFromLeft(170);
-    auto rightColumn = bounds.removeFromRight(220);
-    bounds.removeFromLeft(10);
-    bounds.removeFromRight(10);
+    // Remaining middle area: Timing/Groove card (left), step sequencer
+    // (centre, gets all the freed-up width and height), Ratchet/Chaos
+    // card (right).
+    auto leftColumn = bounds.removeFromLeft(kSideColumnWidth);
+    auto rightColumn = bounds.removeFromRight(kSideColumnWidth);
+    bounds.removeFromLeft(14);
+    bounds.removeFromRight(14);
 
-    std::vector<Encoder*> timingEncoders, pitchEncoders, chaosEncoders;
+    std::vector<Encoder*> timingEncoders, chaosEncoders;
     auto& infoArray = getAllParamInfo();
     for (size_t i = 0; i < encoders.size(); ++i)
     {
         switch (infoArray[i].group)
         {
             case AccentGroup::timing:       timingEncoders.push_back(encoders[i].get()); break;
-            case AccentGroup::pitchSound:   pitchEncoders.push_back(encoders[i].get()); break;
             case AccentGroup::ratchetChaos: chaosEncoders.push_back(encoders[i].get()); break;
+            case AccentGroup::pitchSound:   break; // lives in the per-sample windows now
         }
     }
 
-    sectionTiming.setBounds(leftColumn.removeFromTop(20));
-    leftColumn.removeFromTop(4);
-    for (auto* enc : timingEncoders)
+    timingCardBounds = leftColumn;
+    chaosCardBounds = rightColumn;
+
+    constexpr int encoderHeight = 140;
+    constexpr int encoderGap = 14;
+
+    // Section label stays pinned near the top of its card; the knob group
+    // below it is centred in the remaining height so a card with fewer
+    // knobs (Ratchet/Chaos) doesn't read as top-heavy with empty space
+    // dangling underneath.
+    auto timingContent = leftColumn.reduced(14);
+    sectionTiming.setBounds(timingContent.removeFromTop(20));
+    timingContent.removeFromTop(6);
     {
-        enc->setBounds(leftColumn.removeFromTop(110));
-        leftColumn.removeFromTop(8);
+        int used = (int) timingEncoders.size() * encoderHeight + ((int) timingEncoders.size() - 1) * encoderGap;
+        int topPad = juce::jmax(0, (timingContent.getHeight() - used) / 2);
+        timingContent.removeFromTop(topPad);
+        for (auto* enc : timingEncoders)
+        {
+            enc->setBounds(timingContent.removeFromTop(encoderHeight));
+            timingContent.removeFromTop(encoderGap);
+        }
     }
 
-    sectionPitch.setBounds(rightColumn.removeFromTop(20));
-    rightColumn.removeFromTop(4);
-    auto pitchGrid = rightColumn.removeFromTop(220);
-    int pitchColWidth = pitchGrid.getWidth() / 2;
-    int pitchRowHeight = pitchGrid.getHeight() / 2;
-    for (size_t i = 0; i < pitchEncoders.size(); ++i)
+    auto chaosContent = rightColumn.reduced(14);
+    sectionChaos.setBounds(chaosContent.removeFromTop(20));
+    chaosContent.removeFromTop(6);
     {
-        int row = (int) i / 2;
-        int col = (int) i % 2;
-        juce::Rectangle<int> cell(pitchGrid.getX() + col * pitchColWidth,
-                                   pitchGrid.getY() + row * pitchRowHeight,
-                                   pitchColWidth, pitchRowHeight);
-        pitchEncoders[i]->setBounds(cell.reduced(4));
+        int used = (int) chaosEncoders.size() * encoderHeight + ((int) chaosEncoders.size() - 1) * encoderGap;
+        int topPad = juce::jmax(0, (chaosContent.getHeight() - used) / 2);
+        chaosContent.removeFromTop(topPad);
+        for (auto* enc : chaosEncoders)
+        {
+            enc->setBounds(chaosContent.removeFromTop(encoderHeight));
+            chaosContent.removeFromTop(encoderGap);
+        }
     }
-
-    rightColumn.removeFromTop(6);
-    sectionChaos.setBounds(rightColumn.removeFromTop(20));
-    rightColumn.removeFromTop(4);
-    int chaosColWidth = rightColumn.getWidth() / 2;
-    for (auto* enc : chaosEncoders)
-        enc->setBounds(rightColumn.removeFromLeft(chaosColWidth).reduced(4));
 
     if (visualizer != nullptr)
         visualizer->setBounds(bounds);
@@ -215,6 +270,9 @@ void DrumeeAudioProcessorEditor::refreshAllSampleSlots()
 {
     for (auto& slot : sampleSlots)
         slot->refresh();
+    for (auto& window : sampleWindows)
+        if (window != nullptr)
+            window->getContent().refresh();
 }
 
 void DrumeeAudioProcessorEditor::savePresetDialog()
@@ -252,6 +310,29 @@ void DrumeeAudioProcessorEditor::loadSample(int trackIndex)
             processor.loadSampleForTrack(trackIndex, file);
             if (trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
                 sampleSlots[(size_t) trackIndex]->refresh();
+            if (trackIndex >= 0 && trackIndex < (int) sampleWindows.size() && sampleWindows[(size_t) trackIndex] != nullptr)
+                sampleWindows[(size_t) trackIndex]->getContent().refresh();
         }
     });
+}
+
+void DrumeeAudioProcessorEditor::openSampleWindow(int trackIndex)
+{
+    if (trackIndex < 0 || trackIndex >= (int) sampleWindows.size() || sampleWindows[(size_t) trackIndex] == nullptr)
+        return;
+
+    auto* window = sampleWindows[(size_t) trackIndex].get();
+
+    if (! window->isVisible())
+    {
+        // Cascade each sample's window from the main plugin window so
+        // several can be open at once without landing exactly on top of
+        // one another.
+        auto mainBounds = getScreenBounds();
+        int offset = trackIndex * 28;
+        window->setTopLeftPosition(mainBounds.getRight() + 24 + offset, mainBounds.getY() + offset);
+        window->setVisible(true);
+    }
+
+    window->toFront(true);
 }
