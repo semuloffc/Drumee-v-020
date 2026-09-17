@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 // Global parameters (shown on the main screen: TIMING & GROOVE, RATCHET &
 // CHAOS). PITCH & SOUND used to live here too, but as of 0.2.2 those four
-// controls became per-sample and moved into each sample's own window -
+// controls became per-sample and moved into the internal sample editor panel -
 // see PitchSoundParamIDs / getPitchSoundParamInfoForTrack below.
 // ---------------------------------------------------------------------------
 namespace ParamIDs
@@ -19,7 +19,7 @@ namespace ParamIDs
 }
 
 // ---------------------------------------------------------------------------
-// Per-sample parameters (shown only inside that sample's own window).
+// Per-sample parameters (shown only on that sample's page in the editor panel).
 // Every track gets its own independent Pitch Rand / Decay / Velocity /
 // Volume, addressed as base id + track index, e.g. "decay0" .. "decay4".
 // ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ inline const std::array<ParamInfo, 5>& getAllParamInfo()
 
 // The four Pitch & Sound controls, expanded to their concrete per-track
 // parameter IDs for a given sample/track index. Used to build the encoders
-// inside that sample's own window.
+// on that sample's page in the editor panel.
 inline std::array<ParamInfo, 4> getPitchSoundParamInfoForTrack(int trackIndex)
 {
     return { {

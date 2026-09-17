@@ -61,6 +61,22 @@ public:
     juce::Font getLabelFont(juce::Label&) override;
 };
 
+// Graphical (icon-only) button used where the old build had plain text
+// buttons ("Save" / "New"). Drawn entirely in code so it stays on the same
+// flat, glow-free palette as the rest of the UI - no new image assets.
+class IconButton : public juce::Button
+{
+public:
+    enum class Icon { Save, New, Back };
+
+    IconButton(const juce::String& tooltipText, Icon iconToUse);
+
+    void paintButton(juce::Graphics&, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+
+private:
+    Icon icon;
+};
+
 class Encoder : public juce::Component
 {
 public:
@@ -97,8 +113,8 @@ class SampleSlotComponent : public juce::Component, public juce::FileDragAndDrop
 {
 public:
     // compact = the small card used in the main window's bottom row.
-    // The larger (non-compact) layout is used inside a sample's own window,
-    // where there is room to show the file status on its own line.
+    // The larger (non-compact) layout is used inside the sample editor
+    // panel, where there is room to show the file status on its own line.
     SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact = true);
 
     void resized() override;
@@ -128,9 +144,10 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Sample window: one independent, per-sample settings window holding that
-// sample's file slot plus its own unique PITCH & SOUND controls (Pitch Rand,
-// Decay, Velocity, Volume). Opened from the main screen's sample card.
+// Sample editor page: one sample's file slot plus its own unique PITCH &
+// SOUND controls (Pitch Rand, Decay, Velocity, Volume). As of 0.2.3 this no
+// longer lives in its own OS-level window - it is one page inside
+// SampleEditorPanel, an internal view swapped in over the step sequencer.
 // ---------------------------------------------------------------------------
 class SampleEditorContent : public juce::Component
 {
@@ -151,20 +168,33 @@ private:
     std::vector<std::unique_ptr<Encoder>> encoders;
 };
 
-class SampleEditorWindow : public juce::DocumentWindow
+// ---------------------------------------------------------------------------
+// SampleEditorPanel: internal view that replaces the step sequencer in place
+// (same bounds) while the user is editing samples, instead of opening a
+// separate physical window. Holds one tab per track plus that track's
+// SampleEditorContent page, and a Back button that returns to the sequencer.
+// ---------------------------------------------------------------------------
+class SampleEditorPanel : public juce::Component
 {
 public:
-    // lookAndFeel must outlive this window (owned by the main editor) - a
-    // DocumentWindow is a separate top-level window and does not inherit
-    // the editor's LookAndFeel automatically, so it is applied explicitly
-    // here to keep the sample window on the same palette/typography.
-    SampleEditorWindow(int trackIndex, juce::AudioProcessorValueTreeState& state,
-                        SampleTrack& trackToUse, juce::LookAndFeel& lookAndFeelToUse);
-    ~SampleEditorWindow() override;
+    SampleEditorPanel(juce::AudioProcessorValueTreeState& state, std::array<SampleTrack, kNumTracks>& tracksToUse);
 
-    void closeButtonPressed() override;
-    SampleEditorContent& getContent() { return *content; }
+    void resized() override;
+    void paint(juce::Graphics&) override;
+    void refresh();
+    void showTrack(int trackIndex);
+    int getCurrentTrack() const { return currentTrack; }
+
+    std::function<void(int)> onLoadRequested;
+    std::function<void(int, const juce::File&)> onFileDropped;
+    std::function<void()> onCloseRequested;
 
 private:
-    SampleEditorContent* content = nullptr;
+    void updateTabColours();
+
+    int currentTrack = 0;
+    juce::Label titleLabel { {}, "EDIT SAMPLES" };
+    IconButton closeButton { "Back to sequencer", IconButton::Icon::Back };
+    std::array<std::unique_ptr<juce::TextButton>, kNumTracks> tabButtons;
+    std::array<std::unique_ptr<SampleEditorContent>, kNumTracks> pages;
 };

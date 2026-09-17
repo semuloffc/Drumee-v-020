@@ -64,7 +64,7 @@ public:
     void prepare(double sampleRate);
     void reset();
     // pitchRandSt and velocityDepth are now per-track (one Pitch & Sound
-    // setting per sample, configured in that sample's own window) instead
+    // setting per sample, configured on that sample's page in the editor panel) instead
     // of a single global value applied to every track.
     void process(int numSamples, double bpm, bool isPlaying,
                  float nudgeMs, float swingPct, float humanizePct,

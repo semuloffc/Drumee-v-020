@@ -44,9 +44,12 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
     };
     addAndMakeVisible(newButton);
 
+    editSamplesButton.onClick = [this] { toggleSampleEditor(! isEditingSamples); };
+    addAndMakeVisible(editSamplesButton);
+
     // PITCH & SOUND no longer has a section on the main screen - it moved
-    // into each sample's own window. Only Timing/Groove and Ratchet/Chaos
-    // remain here, plus a small header over the sample row.
+    // into the internal sample editor panel. Only Timing/Groove and
+    // Ratchet/Chaos remain here, plus a small header over the sample row.
     for (auto* label : { &sectionTiming, &sectionChaos, &sectionSamples })
     {
         label->setJustificationType(juce::Justification::centredLeft);
@@ -75,32 +78,31 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
                 && trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
             {
                 sampleSlots[(size_t) trackIndex]->refresh();
-                if (sampleWindows[(size_t) trackIndex] != nullptr)
-                    sampleWindows[(size_t) trackIndex]->getContent().refresh();
+                if (sampleEditorPanel != nullptr)
+                    sampleEditorPanel->refresh();
             }
         };
-        slot->onEditRequested = [this](int trackIndex) { openSampleWindow(trackIndex); };
+        slot->onEditRequested = [this](int trackIndex) { toggleSampleEditor(true, trackIndex); };
         addAndMakeVisible(*slot);
         sampleSlots.push_back(std::move(slot));
     }
 
-    // Create every sample's own window up front (hidden). Each one owns a
-    // unique, independent set of PITCH & SOUND controls for that sample.
-    for (int i = 0; i < kNumTracks; ++i)
+    // Internal panel that takes over the sequencer's own bounds while
+    // editing samples - one per-track tab, each holding that sample's file
+    // slot and its own unique PITCH & SOUND controls.
+    sampleEditorPanel = std::make_unique<SampleEditorPanel>(processor.apvts, processor.tracks);
+    sampleEditorPanel->onLoadRequested = [this](int trackIndex) { loadSample(trackIndex); };
+    sampleEditorPanel->onFileDropped = [this](int trackIndex, const juce::File& file)
     {
-        auto window = std::make_unique<SampleEditorWindow>(i, processor.apvts, processor.tracks[(size_t) i], lookAndFeel);
-        window->getContent().onLoadRequested = [this](int trackIndex) { loadSample(trackIndex); };
-        window->getContent().onFileDropped = [this](int trackIndex, const juce::File& file)
+        if (processor.loadSampleForTrack(trackIndex, file) && trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
         {
-            if (processor.loadSampleForTrack(trackIndex, file) && trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
-            {
-                sampleSlots[(size_t) trackIndex]->refresh();
-                if (sampleWindows[(size_t) trackIndex] != nullptr)
-                    sampleWindows[(size_t) trackIndex]->getContent().refresh();
-            }
-        };
-        sampleWindows[(size_t) i] = std::move(window);
-    }
+            sampleSlots[(size_t) trackIndex]->refresh();
+            if (sampleEditorPanel != nullptr)
+                sampleEditorPanel->refresh();
+        }
+    };
+    sampleEditorPanel->onCloseRequested = [this] { toggleSampleEditor(false); };
+    addChildComponent(*sampleEditorPanel); // hidden until Edit Samples is pressed
 
     refreshPresetList();
 
@@ -156,16 +158,30 @@ void DrumeeAudioProcessorEditor::resized()
     auto titleArea = topBar.removeFromLeft(160);
     titleLabel.setBounds(titleArea.removeFromTop(26));
     versionLabel.setBounds(titleArea);
-    newButton.setBounds(topBar.removeFromRight(60).reduced(0, 6));
+
+    editSamplesButton.setBounds(topBar.removeFromRight(130).reduced(0, 6));
     topBar.removeFromRight(6);
-    saveButton.setBounds(topBar.removeFromRight(70).reduced(0, 6));
-    topBar.removeFromRight(6);
-    presetBox.setBounds(topBar.removeFromRight(180).reduced(0, 6));
+
+    // Preset selector + its graphical New/Save buttons, grouped and
+    // centred in whatever top-bar width remains between the title and the
+    // Edit Samples button.
+    constexpr int presetBoxWidth = 180;
+    constexpr int iconButtonSize = 32;
+    constexpr int presetGroupGap = 6;
+    int presetGroupWidth = presetBoxWidth + presetGroupGap + iconButtonSize + presetGroupGap + iconButtonSize;
+
+    auto presetGroup = topBar.withSizeKeepingCentre(presetGroupWidth, topBar.getHeight());
+    presetBox.setBounds(presetGroup.removeFromLeft(presetBoxWidth).reduced(0, 6));
+    presetGroup.removeFromLeft(presetGroupGap);
+    newButton.setBounds(presetGroup.removeFromLeft(iconButtonSize).reduced(0, 6));
+    presetGroup.removeFromLeft(presetGroupGap);
+    saveButton.setBounds(presetGroup.removeFromLeft(iconButtonSize).reduced(0, 6));
 
     bounds.removeFromTop(10);
 
     // Bottom row: SAMPLES header + the five sample cards. Each card now
-    // also carries an Edit button that opens that sample's own window.
+    // also carries an Edit button that opens the internal sample editor
+    // panel, focused on that track.
     auto samplesArea = bounds.removeFromBottom(kSampleRowHeight);
     sectionSamples.setBounds(samplesArea.removeFromTop(20));
     samplesArea.removeFromTop(6);
@@ -196,7 +212,7 @@ void DrumeeAudioProcessorEditor::resized()
         {
             case AccentGroup::timing:       timingEncoders.push_back(encoders[i].get()); break;
             case AccentGroup::ratchetChaos: chaosEncoders.push_back(encoders[i].get()); break;
-            case AccentGroup::pitchSound:   break; // lives in the per-sample windows now
+            case AccentGroup::pitchSound:   break; // lives in the sample editor panel now
         }
     }
 
@@ -238,8 +254,13 @@ void DrumeeAudioProcessorEditor::resized()
         }
     }
 
+    // The sample editor panel takes over exactly the same bounds as the
+    // step sequencer - it swaps in over it rather than opening a separate
+    // physical window.
     if (visualizer != nullptr)
         visualizer->setBounds(bounds);
+    if (sampleEditorPanel != nullptr)
+        sampleEditorPanel->setBounds(bounds);
 }
 
 void DrumeeAudioProcessorEditor::refreshPresetList()
@@ -270,9 +291,8 @@ void DrumeeAudioProcessorEditor::refreshAllSampleSlots()
 {
     for (auto& slot : sampleSlots)
         slot->refresh();
-    for (auto& window : sampleWindows)
-        if (window != nullptr)
-            window->getContent().refresh();
+    if (sampleEditorPanel != nullptr)
+        sampleEditorPanel->refresh();
 }
 
 void DrumeeAudioProcessorEditor::savePresetDialog()
@@ -310,29 +330,22 @@ void DrumeeAudioProcessorEditor::loadSample(int trackIndex)
             processor.loadSampleForTrack(trackIndex, file);
             if (trackIndex >= 0 && trackIndex < (int) sampleSlots.size())
                 sampleSlots[(size_t) trackIndex]->refresh();
-            if (trackIndex >= 0 && trackIndex < (int) sampleWindows.size() && sampleWindows[(size_t) trackIndex] != nullptr)
-                sampleWindows[(size_t) trackIndex]->getContent().refresh();
+            if (sampleEditorPanel != nullptr)
+                sampleEditorPanel->refresh();
         }
     });
 }
 
-void DrumeeAudioProcessorEditor::openSampleWindow(int trackIndex)
+void DrumeeAudioProcessorEditor::toggleSampleEditor(bool show, int trackIndexToShow)
 {
-    if (trackIndex < 0 || trackIndex >= (int) sampleWindows.size() || sampleWindows[(size_t) trackIndex] == nullptr)
+    if (sampleEditorPanel == nullptr || visualizer == nullptr)
         return;
 
-    auto* window = sampleWindows[(size_t) trackIndex].get();
+    if (show && trackIndexToShow >= 0)
+        sampleEditorPanel->showTrack(trackIndexToShow);
 
-    if (! window->isVisible())
-    {
-        // Cascade each sample's window from the main plugin window so
-        // several can be open at once without landing exactly on top of
-        // one another.
-        auto mainBounds = getScreenBounds();
-        int offset = trackIndex * 28;
-        window->setTopLeftPosition(mainBounds.getRight() + 24 + offset, mainBounds.getY() + offset);
-        window->setVisible(true);
-    }
-
-    window->toFront(true);
+    isEditingSamples = show;
+    sampleEditorPanel->setVisible(show);
+    visualizer->setVisible(! show);
+    editSamplesButton.setButtonText(show ? "Back to Beat" : "Edit Samples");
 }

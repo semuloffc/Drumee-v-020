@@ -61,7 +61,7 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
     float probability = apvts.getRawParameterValue(ParamIDs::probability)->load();
 
     // Pitch & Sound is now per-sample: each track has its own Pitch Rand,
-    // Decay, Velocity and Volume, set from that sample's own window.
+    // Decay, Velocity and Volume, set on that sample's page in the editor panel.
     std::array<float, kNumTracks> pitchRand {};
     std::array<float, kNumTracks> velocity {};
     std::array<float, kNumTracks> decay {};

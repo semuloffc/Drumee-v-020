@@ -18,7 +18,7 @@ private:
     void loadSample(int trackIndex);
     void refreshAllSampleSlots();
     void selectPresetInBox(const juce::String& name);
-    void openSampleWindow(int trackIndex);
+    void toggleSampleEditor(bool show, int trackIndexToShow = -1);
 
     DrumeeAudioProcessor& processor;
     DrumeeLookAndFeel lookAndFeel;
@@ -26,8 +26,9 @@ private:
     juce::Label titleLabel;
     juce::Label versionLabel;
     juce::ComboBox presetBox;
-    juce::TextButton saveButton { "Save" };
-    juce::TextButton newButton { "New" };
+    IconButton saveButton { "Save preset", IconButton::Icon::Save };
+    IconButton newButton { "New pattern", IconButton::Icon::New };
+    juce::TextButton editSamplesButton { "Edit Samples" };
 
     juce::Label sectionTiming { {}, "TIMING & GROOVE" };
     juce::Label sectionChaos { {}, "RATCHET & CHAOS" };
@@ -43,9 +44,10 @@ private:
     std::unique_ptr<StepSequencerVisualizer> visualizer;
     std::vector<std::unique_ptr<SampleSlotComponent>> sampleSlots;
 
-    // One independent, persistent settings window per sample - each holds
-    // that sample's own unique PITCH & SOUND controls.
-    std::array<std::unique_ptr<SampleEditorWindow>, kNumTracks> sampleWindows;
+    // Internal view swapped in over the step sequencer's own bounds while
+    // editing samples - replaces the old per-sample OS-level windows.
+    std::unique_ptr<SampleEditorPanel> sampleEditorPanel;
+    bool isEditingSamples = false;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 

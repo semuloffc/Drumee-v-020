@@ -74,6 +74,86 @@ juce::Font DrumeeLookAndFeel::getLabelFont(juce::Label& label)
     return juce::Font(label.getFont().getHeight(), juce::Font::plain);
 }
 
+IconButton::IconButton(const juce::String& tooltipText, Icon iconToUse) : juce::Button(tooltipText), icon(iconToUse)
+{
+    setTooltip(tooltipText);
+}
+
+void IconButton::paintButton(juce::Graphics& g, bool isHighlighted, bool isDown)
+{
+    auto bounds = getLocalBounds().toFloat().reduced(1.0f);
+
+    juce::Colour base = DrumeeColours::panel;
+    if (isDown)
+        base = DrumeeColours::panelAlt;
+    else if (isHighlighted)
+        base = base.brighter(0.10f);
+
+    g.setColour(base);
+    g.fillRoundedRectangle(bounds, 4.0f);
+    g.setColour(DrumeeColours::outline);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 4.0f, 1.0f);
+
+    auto glyph = bounds.reduced(bounds.getWidth() * 0.28f, bounds.getHeight() * 0.28f);
+    juce::Colour ink = isHighlighted || isDown ? DrumeeColours::textPrimary : DrumeeColours::textSecondary;
+    g.setColour(ink);
+
+    if (icon == Icon::Save)
+    {
+        // Flat floppy-disk glyph: outer body, a write-protect tab top-left
+        // and a label strip - reads clearly at small toolbar sizes.
+        juce::Path body;
+        body.addRoundedRectangle(glyph, 1.5f);
+        g.strokePath(body, juce::PathStrokeType(1.6f));
+
+        auto tab = glyph.removeFromTop(glyph.getHeight() * 0.42f).removeFromRight(glyph.getWidth() * 0.55f);
+        g.fillRoundedRectangle(tab.reduced(1.5f, 0.0f), 1.0f);
+
+        auto label = juce::Rectangle<float>(glyph.getX() + glyph.getWidth() * 0.18f,
+                                             glyph.getBottom() - glyph.getHeight() * 0.02f,
+                                             glyph.getWidth() * 0.64f, glyph.getHeight() * 0.55f);
+        g.drawRoundedRectangle(label, 1.0f, 1.4f);
+    }
+    else if (icon == Icon::New)
+    {
+        // Blank page with a folded corner and a "+" - a pattern reset reads
+        // as "start a fresh page" rather than a destructive action.
+        juce::Path page;
+        float fold = glyph.getWidth() * 0.32f;
+        page.startNewSubPath(glyph.getX(), glyph.getY());
+        page.lineTo(glyph.getRight() - fold, glyph.getY());
+        page.lineTo(glyph.getRight(), glyph.getY() + fold);
+        page.lineTo(glyph.getRight(), glyph.getBottom());
+        page.lineTo(glyph.getX(), glyph.getBottom());
+        page.closeSubPath();
+        g.strokePath(page, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        juce::Path corner;
+        corner.startNewSubPath(glyph.getRight() - fold, glyph.getY());
+        corner.lineTo(glyph.getRight() - fold, glyph.getY() + fold);
+        corner.lineTo(glyph.getRight(), glyph.getY() + fold);
+        g.strokePath(corner, juce::PathStrokeType(1.2f));
+
+        auto plusArea = glyph.withTrimmedTop(glyph.getHeight() * 0.38f).reduced(glyph.getWidth() * 0.2f, 0.0f);
+        auto centre = plusArea.getCentre();
+        float armLength = juce::jmin(plusArea.getWidth(), plusArea.getHeight()) * 0.5f;
+        g.drawLine(centre.x - armLength, centre.y, centre.x + armLength, centre.y, 1.6f);
+        g.drawLine(centre.x, centre.y - armLength, centre.x, centre.y + armLength, 1.6f);
+    }
+    else // Icon::Back
+    {
+        auto centre = glyph.getCentre();
+        float armLength = juce::jmin(glyph.getWidth(), glyph.getHeight()) * 0.5f;
+        juce::Path arrow;
+        arrow.startNewSubPath(centre.x + armLength, centre.y);
+        arrow.lineTo(centre.x - armLength, centre.y);
+        arrow.startNewSubPath(centre.x - armLength * 0.35f, centre.y - armLength * 0.65f);
+        arrow.lineTo(centre.x - armLength, centre.y);
+        arrow.lineTo(centre.x - armLength * 0.35f, centre.y + armLength * 0.65f);
+        g.strokePath(arrow, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+}
+
 Encoder::Encoder(juce::AudioProcessorValueTreeState& state, const ParamInfo& info)
 {
     accentColour = DrumeeColours::forGroup(info.group);
@@ -254,7 +334,7 @@ void SampleSlotComponent::resized()
     }
     else
     {
-        // Wide, single-row layout for use inside a sample's own window.
+        // Wide, single-row layout for use inside the sample editor panel.
         auto bounds = getLocalBounds().reduced(10, 8);
         bounds.removeFromLeft(6);
         loadButton.setBounds(bounds.removeFromRight(84).reduced(0, 10));
@@ -395,45 +475,115 @@ void SampleEditorContent::resized()
 
 void SampleEditorContent::paint(juce::Graphics& g)
 {
-    g.fillAll(DrumeeColours::background);
-
+    // This page now lives nested inside SampleEditorPanel's own panel
+    // background (rather than filling a standalone window), so it stays
+    // transparent and only draws the recessed well behind its encoder grid,
+    // matching the "panelAlt" treatment used for other sunken fields.
     constexpr int margin = 20;
     auto bounds = getLocalBounds().reduced(margin);
     bounds.removeFromTop(28 + 10 + 66 + 18 + 20 + 8);
 
-    // Card behind the encoder grid, matching the panel look used elsewhere
-    // in the plugin (step grid, sample slots).
-    g.setColour(DrumeeColours::panel);
+    g.setColour(DrumeeColours::panelAlt);
     g.fillRoundedRectangle(bounds.toFloat(), 6.0f);
     g.setColour(DrumeeColours::outline);
     g.drawRoundedRectangle(bounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
 }
 
 // ---------------------------------------------------------------------------
-// SampleEditorWindow
+// SampleEditorPanel
 // ---------------------------------------------------------------------------
-SampleEditorWindow::SampleEditorWindow(int trackIndex, juce::AudioProcessorValueTreeState& state,
-                                        SampleTrack& trackToUse, juce::LookAndFeel& lookAndFeelToUse)
-    : juce::DocumentWindow(trackToUse.name + " — Sample", DrumeeColours::background, juce::DocumentWindow::closeButton)
+SampleEditorPanel::SampleEditorPanel(juce::AudioProcessorValueTreeState& state, std::array<SampleTrack, kNumTracks>& tracksToUse)
 {
-    setLookAndFeel(&lookAndFeelToUse);
-    setUsingNativeTitleBar(true);
-    setResizable(false, false);
+    titleLabel.setFont(juce::Font(14.0f, juce::Font::bold));
+    titleLabel.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
+    titleLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(titleLabel);
 
-    content = new SampleEditorContent(trackIndex, state, trackToUse);
-    content->setSize(380, 460);
-    setContentOwned(content, true); // resizes the window itself to fit content + title bar
+    closeButton.onClick = [this] { if (onCloseRequested) onCloseRequested(); };
+    addAndMakeVisible(closeButton);
+
+    for (int i = 0; i < kNumTracks; ++i)
+    {
+        auto tab = std::make_unique<juce::TextButton>(tracksToUse[(size_t) i].name);
+        tab->onClick = [this, i] { showTrack(i); };
+        addAndMakeVisible(*tab);
+        tabButtons[(size_t) i] = std::move(tab);
+
+        auto page = std::make_unique<SampleEditorContent>(i, state, tracksToUse[(size_t) i]);
+        page->onLoadRequested = [this](int t) { if (onLoadRequested) onLoadRequested(t); };
+        page->onFileDropped = [this](int t, const juce::File& f) { if (onFileDropped) onFileDropped(t, f); };
+        addChildComponent(*page); // hidden until selected by showTrack()
+        pages[(size_t) i] = std::move(page);
+    }
+
+    showTrack(0);
 }
 
-SampleEditorWindow::~SampleEditorWindow()
+void SampleEditorPanel::showTrack(int trackIndex)
 {
-    setLookAndFeel(nullptr);
+    if (trackIndex < 0 || trackIndex >= kNumTracks)
+        return;
+
+    currentTrack = trackIndex;
+
+    for (int i = 0; i < kNumTracks; ++i)
+        pages[(size_t) i]->setVisible(i == currentTrack);
+
+    updateTabColours();
+    resized();
 }
 
-void SampleEditorWindow::closeButtonPressed()
+void SampleEditorPanel::updateTabColours()
 {
-    // The sample window is a persistent settings panel for that sample, not
-    // a one-shot dialog - hide it instead of destroying it so its state
-    // (and screen position) survives being closed and reopened.
-    setVisible(false);
+    for (int i = 0; i < kNumTracks; ++i)
+    {
+        auto* tab = tabButtons[(size_t) i].get();
+        juce::Colour accent = DrumeeColours::forTrack(i);
+        bool isSelected = (i == currentTrack);
+
+        tab->setColour(juce::TextButton::buttonColourId, isSelected ? accent : DrumeeColours::panelAlt);
+        tab->setColour(juce::TextButton::textColourOffId, isSelected ? DrumeeColours::textInverse : DrumeeColours::textSecondary);
+    }
+}
+
+void SampleEditorPanel::refresh()
+{
+    for (auto& page : pages)
+        if (page != nullptr)
+            page->refresh();
+}
+
+void SampleEditorPanel::resized()
+{
+    auto bounds = getLocalBounds().reduced(14);
+
+    auto headerRow = bounds.removeFromTop(24);
+    closeButton.setBounds(headerRow.removeFromLeft(28));
+    headerRow.removeFromLeft(8);
+    titleLabel.setBounds(headerRow);
+
+    bounds.removeFromTop(10);
+
+    auto tabRow = bounds.removeFromTop(28);
+    int tabGap = 6;
+    int tabWidth = (tabRow.getWidth() - tabGap * (kNumTracks - 1)) / kNumTracks;
+    for (auto& tab : tabButtons)
+    {
+        tab->setBounds(tabRow.removeFromLeft(tabWidth));
+        tabRow.removeFromLeft(tabGap);
+    }
+
+    bounds.removeFromTop(10);
+
+    for (auto& page : pages)
+        page->setBounds(bounds);
+}
+
+void SampleEditorPanel::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(DrumeeColours::panel);
+    g.fillRoundedRectangle(bounds, 6.0f);
+    g.setColour(DrumeeColours::outline);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 6.0f, 1.0f);
 }
