@@ -44,6 +44,17 @@ namespace DrumeeColours
         };
         return trackColours[juce::jlimit(0, 4, trackIndex)];
     }
+
+    // Per-track PITCH & SOUND knob accent, used inside the sample editor
+    // panel. Reuses forTrack() for Kick/Clap/Perc (blue-ish teal / pink),
+    // but Snare and FX keep the plain, un-darkened accent3 amber that every
+    // sample's knobs used before this became per-track - i.e. "unchanged".
+    inline juce::Colour forSampleKnob(int trackIndex)
+    {
+        if (trackIndex == 1 || trackIndex == 4)
+            return accent3;
+        return forTrack(trackIndex);
+    }
 }
 
 class DrumeeLookAndFeel : public juce::LookAndFeel_V4
@@ -84,6 +95,7 @@ public:
 
     void resized() override;
     void paint(juce::Graphics&) override;
+    void setAccentColour(juce::Colour newColour);
 
 private:
     juce::Slider slider;
@@ -120,12 +132,21 @@ public:
     void resized() override;
     void paint(juce::Graphics&) override;
     void refresh();
+    void setSelected(bool shouldBeSelected);
 
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
     void fileDragEnter(const juce::StringArray& files, int x, int y) override;
     void fileDragExit(const juce::StringArray& files) override;
     void filesDropped(const juce::StringArray& files, int x, int y) override;
 
+    void mouseEnter(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+
+    // compact card: click selects this sample for editing (opens/focuses
+    // the sample editor panel on it). Non-compact (already inside that
+    // panel, already the sample being edited): click loads a file - there
+    // is no "select" ambiguity to resolve there.
     std::function<void(int)> onLoadRequested;
     std::function<void(int, const juce::File&)> onFileDropped;
     std::function<void(int)> onEditRequested;   // main-screen card only
@@ -136,18 +157,19 @@ private:
     int index;
     SampleTrack& track;
     bool isCompact;
-    juce::TextButton loadButton;
-    juce::TextButton editButton;
     juce::Label nameLabel;
     juce::Label statusLabel;
     bool isDragHover = false;
+    bool isMouseOver = false;
+    bool isSelected = false;
 };
 
 // ---------------------------------------------------------------------------
 // Sample editor page: one sample's file slot plus its own unique PITCH &
 // SOUND controls (Pitch Rand, Decay, Velocity, Volume). As of 0.2.3 this no
 // longer lives in its own OS-level window - it is one page inside
-// SampleEditorPanel, an internal view swapped in over the step sequencer.
+// SampleEditorPanel, an internal view swapped in full-width over the step
+// sequencer and side knob columns.
 // ---------------------------------------------------------------------------
 class SampleEditorContent : public juce::Component
 {
@@ -169,10 +191,11 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// SampleEditorPanel: internal view that replaces the step sequencer in place
-// (same bounds) while the user is editing samples, instead of opening a
-// separate physical window. Holds one tab per track plus that track's
-// SampleEditorContent page, and a Back button that returns to the sequencer.
+// SampleEditorPanel: internal view that takes over the plugin's full width
+// (step sequencer plus both side knob columns) while the user is editing
+// samples, instead of opening a separate physical window. Holds one tab per
+// track plus that track's SampleEditorContent page, and a Back button that
+// returns to the sequencer.
 // ---------------------------------------------------------------------------
 class SampleEditorPanel : public juce::Component
 {
@@ -188,12 +211,15 @@ public:
     std::function<void(int)> onLoadRequested;
     std::function<void(int, const juce::File&)> onFileDropped;
     std::function<void()> onCloseRequested;
+    std::function<void(int)> onTrackChanged;   // fired whenever the selected tab changes
 
 private:
     void updateTabColours();
+    void updateTitle();
 
     int currentTrack = 0;
-    juce::Label titleLabel { {}, "EDIT SAMPLES" };
+    std::array<juce::String, kNumTracks> trackNames;
+    juce::Label titleLabel;
     IconButton closeButton { "Back to sequencer", IconButton::Icon::Back };
     std::array<std::unique_ptr<juce::TextButton>, kNumTracks> tabButtons;
     std::array<std::unique_ptr<SampleEditorContent>, kNumTracks> pages;

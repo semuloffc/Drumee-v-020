@@ -102,6 +102,11 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
         }
     };
     sampleEditorPanel->onCloseRequested = [this] { toggleSampleEditor(false); };
+    sampleEditorPanel->onTrackChanged = [this](int trackIndex)
+    {
+        if (isEditingSamples)
+            highlightEditedSample(trackIndex);
+    };
     addChildComponent(*sampleEditorPanel); // hidden until Edit Samples is pressed
 
     refreshPresetList();
@@ -142,12 +147,17 @@ void DrumeeAudioProcessorEditor::paint(juce::Graphics& g)
 
     // Card panels behind the Timing/Groove and Ratchet/Chaos knob groups,
     // matching the panel treatment used by the step grid and sample cards.
-    g.setColour(DrumeeColours::panel);
-    g.fillRoundedRectangle(timingCardBounds.toFloat(), 6.0f);
-    g.fillRoundedRectangle(chaosCardBounds.toFloat(), 6.0f);
-    g.setColour(DrumeeColours::outline);
-    g.drawRoundedRectangle(timingCardBounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
-    g.drawRoundedRectangle(chaosCardBounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
+    // Skipped while the sample editor panel is open and full-width - it
+    // paints its own opaque panel over this same area anyway.
+    if (! isEditingSamples)
+    {
+        g.setColour(DrumeeColours::panel);
+        g.fillRoundedRectangle(timingCardBounds.toFloat(), 6.0f);
+        g.fillRoundedRectangle(chaosCardBounds.toFloat(), 6.0f);
+        g.setColour(DrumeeColours::outline);
+        g.drawRoundedRectangle(timingCardBounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
+        g.drawRoundedRectangle(chaosCardBounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
+    }
 }
 
 void DrumeeAudioProcessorEditor::resized()
@@ -179,9 +189,9 @@ void DrumeeAudioProcessorEditor::resized()
 
     bounds.removeFromTop(10);
 
-    // Bottom row: SAMPLES header + the five sample cards. Each card now
-    // also carries an Edit button that opens the internal sample editor
-    // panel, focused on that track.
+    // Bottom row: SAMPLES header + the five sample cards. Each card is a
+    // single click target that opens the internal sample editor panel,
+    // focused on that track (no separate Edit button any more).
     auto samplesArea = bounds.removeFromBottom(kSampleRowHeight);
     sectionSamples.setBounds(samplesArea.removeFromTop(20));
     samplesArea.removeFromTop(6);
@@ -198,7 +208,11 @@ void DrumeeAudioProcessorEditor::resized()
 
     // Remaining middle area: Timing/Groove card (left), step sequencer
     // (centre, gets all the freed-up width and height), Ratchet/Chaos
-    // card (right).
+    // card (right). Captured whole (before the left/right split) too, so
+    // the sample editor panel can take over the full plugin width when
+    // it's open - no side knob columns next to it.
+    auto fullMiddleArea = bounds;
+
     auto leftColumn = bounds.removeFromLeft(kSideColumnWidth);
     auto rightColumn = bounds.removeFromRight(kSideColumnWidth);
     bounds.removeFromLeft(14);
@@ -254,13 +268,14 @@ void DrumeeAudioProcessorEditor::resized()
         }
     }
 
-    // The sample editor panel takes over exactly the same bounds as the
-    // step sequencer - it swaps in over it rather than opening a separate
-    // physical window.
+    // The sample editor panel takes over the full plugin width (the area
+    // the sequencer, Timing/Groove and Ratchet/Chaos columns normally
+    // share) while it's open, instead of sitting squeezed between the two
+    // side knob columns.
     if (visualizer != nullptr)
         visualizer->setBounds(bounds);
     if (sampleEditorPanel != nullptr)
-        sampleEditorPanel->setBounds(bounds);
+        sampleEditorPanel->setBounds(fullMiddleArea);
 }
 
 void DrumeeAudioProcessorEditor::refreshPresetList()
@@ -347,5 +362,21 @@ void DrumeeAudioProcessorEditor::toggleSampleEditor(bool show, int trackIndexToS
     isEditingSamples = show;
     sampleEditorPanel->setVisible(show);
     visualizer->setVisible(! show);
+
+    // No side knob columns while the sample editor panel is open - it
+    // takes over their space instead (see resized()/paint()).
+    sectionTiming.setVisible(! show);
+    sectionChaos.setVisible(! show);
+    for (auto& encoder : encoders)
+        encoder->setVisible(! show);
+
     editSamplesButton.setButtonText(show ? "Back to Beat" : "Edit Samples");
+    highlightEditedSample(show ? sampleEditorPanel->getCurrentTrack() : -1);
+    repaint();
+}
+
+void DrumeeAudioProcessorEditor::highlightEditedSample(int trackIndex)
+{
+    for (int i = 0; i < (int) sampleSlots.size(); ++i)
+        sampleSlots[(size_t) i]->setSelected(i == trackIndex);
 }

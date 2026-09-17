@@ -19,6 +19,7 @@ private:
     void refreshAllSampleSlots();
     void selectPresetInBox(const juce::String& name);
     void toggleSampleEditor(bool show, int trackIndexToShow = -1);
+    void highlightEditedSample(int trackIndex);
 
     DrumeeAudioProcessor& processor;
     DrumeeLookAndFeel lookAndFeel;

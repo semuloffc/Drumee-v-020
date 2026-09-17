@@ -184,6 +184,13 @@ void Encoder::resized()
 
 void Encoder::paint(juce::Graphics&) {}
 
+void Encoder::setAccentColour(juce::Colour newColour)
+{
+    accentColour = newColour;
+    slider.setColour(juce::Slider::rotarySliderFillColourId, accentColour);
+    repaint();
+}
+
 StepSequencerVisualizer::StepSequencerVisualizer(Sequencer& sequencerToUse) : sequencer(sequencerToUse)
 {
     startTimerHz(30);
@@ -290,58 +297,35 @@ void StepSequencerVisualizer::timerCallback()
 SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact)
     : index(trackIndex), track(trackToUse), isCompact(compact)
 {
+    setInterceptsMouseClicks(true, false);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+
     nameLabel.setJustificationType(juce::Justification::centredLeft);
     nameLabel.setFont(juce::Font(compact ? 14.0f : 16.0f, juce::Font::bold));
     nameLabel.setColour(juce::Label::textColourId, DrumeeColours::textPrimary);
+    nameLabel.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(nameLabel);
 
     statusLabel.setJustificationType(juce::Justification::centredLeft);
     statusLabel.setFont(juce::Font(11.0f, juce::Font::plain));
     statusLabel.setColour(juce::Label::textColourId, DrumeeColours::textMuted);
+    statusLabel.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(statusLabel);
 
-    loadButton.setButtonText("Load");
-    loadButton.onClick = [this] { if (onLoadRequested) onLoadRequested(index); };
-    addAndMakeVisible(loadButton);
-
-    if (isCompact)
-    {
-        editButton.setButtonText("Edit");
-        editButton.onClick = [this] { if (onEditRequested) onEditRequested(index); };
-        addAndMakeVisible(editButton);
-    }
+    setTooltip(isCompact ? "Click to edit this sample \xc2\xb7 drop an audio file to load"
+                          : "Click or drop an audio file to load");
 
     refresh();
 }
 
 void SampleSlotComponent::resized()
 {
-    if (isCompact)
-    {
-        // Card layout for the main screen: accent tab (painted) + name/status
-        // stacked on top, a Load/Edit button row along the bottom.
-        auto bounds = getLocalBounds().reduced(10, 8);
-        bounds.removeFromLeft(6); // room for the painted accent tab
-
-        auto buttonRow = bounds.removeFromBottom(26);
-        loadButton.setBounds(buttonRow.removeFromLeft((buttonRow.getWidth() - 6) / 2));
-        buttonRow.removeFromLeft(6);
-        editButton.setBounds(buttonRow);
-
-        bounds.removeFromBottom(6);
-        nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
-        statusLabel.setBounds(bounds);
-    }
-    else
-    {
-        // Wide, single-row layout for use inside the sample editor panel.
-        auto bounds = getLocalBounds().reduced(10, 8);
-        bounds.removeFromLeft(6);
-        loadButton.setBounds(bounds.removeFromRight(84).reduced(0, 10));
-        bounds.removeFromRight(8);
-        nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
-        statusLabel.setBounds(bounds);
-    }
+    // Buttonless card: accent tab (painted) on the left, name on top,
+    // status/filename below it - the whole card is the click target.
+    auto bounds = getLocalBounds().reduced(10, 8);
+    bounds.removeFromLeft(6);
+    nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
+    statusLabel.setBounds(bounds);
 }
 
 void SampleSlotComponent::paint(juce::Graphics& g)
@@ -349,15 +333,27 @@ void SampleSlotComponent::paint(juce::Graphics& g)
     auto bounds = getLocalBounds().toFloat();
     juce::Colour accent = DrumeeColours::forTrack(index);
 
-    g.setColour(isDragHover ? DrumeeColours::panelAlt.brighter(0.08f) : DrumeeColours::panel);
+    juce::Colour fill = DrumeeColours::panel;
+    if (isDragHover)
+        fill = DrumeeColours::panelAlt.brighter(0.08f);
+    else if (isSelected)
+        fill = DrumeeColours::panelAlt;
+    else if (isMouseOver)
+        fill = DrumeeColours::panel.brighter(0.05f);
+
+    g.setColour(fill);
     g.fillRoundedRectangle(bounds, 5.0f);
-    g.setColour(isDragHover ? accent : DrumeeColours::outline);
-    g.drawRoundedRectangle(bounds.reduced(0.75f), 5.0f, isDragHover ? 2.0f : 1.0f);
+
+    bool showAccentOutline = isDragHover || isSelected;
+    g.setColour(showAccentOutline ? accent : DrumeeColours::outline);
+    g.drawRoundedRectangle(bounds.reduced(0.75f), 5.0f, showAccentOutline ? 2.0f : 1.0f);
 
     // Flat accent tab on the left edge identifies the track colour even
     // when the slot is empty, matching the step-grid colour for that row.
+    // Widens slightly when this is the sample currently being edited.
     g.setColour(accent);
-    g.fillRoundedRectangle(bounds.removeFromLeft(4.0f).reduced(0.0f, 6.0f), 2.0f);
+    float tabWidth = isSelected ? 5.0f : 4.0f;
+    g.fillRoundedRectangle(bounds.removeFromLeft(tabWidth).reduced(0.0f, 6.0f), 2.0f);
 }
 
 void SampleSlotComponent::refresh()
@@ -365,6 +361,14 @@ void SampleSlotComponent::refresh()
     nameLabel.setText(track.name, juce::dontSendNotification);
     statusLabel.setText(track.loaded ? track.sourceFile.getFileName() : "Empty slot",
                          juce::dontSendNotification);
+}
+
+void SampleSlotComponent::setSelected(bool shouldBeSelected)
+{
+    if (isSelected == shouldBeSelected)
+        return;
+    isSelected = shouldBeSelected;
+    repaint();
 }
 
 bool SampleSlotComponent::isAcceptableFile(const juce::File& file) const
@@ -411,14 +415,48 @@ void SampleSlotComponent::filesDropped(const juce::StringArray& files, int, int)
     repaint();
 }
 
+void SampleSlotComponent::mouseEnter(const juce::MouseEvent&)
+{
+    isMouseOver = true;
+    repaint();
+}
+
+void SampleSlotComponent::mouseExit(const juce::MouseEvent&)
+{
+    isMouseOver = false;
+    repaint();
+}
+
+void SampleSlotComponent::mouseUp(const juce::MouseEvent& event)
+{
+    if (! event.mouseWasClicked())
+        return;
+
+    // Non-compact = already inside the sample editor panel, already the
+    // sample being edited - a click there means "load a file" rather than
+    // "select me", since there is nothing left to select.
+    if (isCompact)
+    {
+        if (onEditRequested)
+            onEditRequested(index);
+    }
+    else
+    {
+        if (onLoadRequested)
+            onLoadRequested(index);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SampleEditorContent
 // ---------------------------------------------------------------------------
 SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorValueTreeState& state, SampleTrack& trackToUse)
 {
+    juce::Colour trackAccent = DrumeeColours::forTrack(trackIndex);
+
     sampleNameLabel.setText(trackToUse.name, juce::dontSendNotification);
     sampleNameLabel.setFont(juce::Font(20.0f, juce::Font::bold));
-    sampleNameLabel.setColour(juce::Label::textColourId, DrumeeColours::textPrimary);
+    sampleNameLabel.setColour(juce::Label::textColourId, trackAccent);
     sampleNameLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(sampleNameLabel);
 
@@ -432,9 +470,11 @@ SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorVal
     sectionPitch.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
     addAndMakeVisible(sectionPitch);
 
+    juce::Colour knobAccent = DrumeeColours::forSampleKnob(trackIndex);
     for (auto& info : getPitchSoundParamInfoForTrack(trackIndex))
     {
         auto encoder = std::make_unique<Encoder>(state, info);
+        encoder->setAccentColour(knobAccent);
         addAndMakeVisible(*encoder);
         encoders.push_back(std::move(encoder));
     }
@@ -460,16 +500,20 @@ void SampleEditorContent::resized()
     sectionPitch.setBounds(bounds.removeFromTop(20));
     bounds.removeFromTop(8);
 
-    // 2x2 grid of Pitch & Sound encoders, filling the remaining space.
+    // Single row of Pitch & Sound encoders - now that the panel spans the
+    // full plugin width (no side knob columns next to it), there is room
+    // for all four knobs side by side instead of stacking them 2x2.
+    constexpr int encoderHeight = 130;
     auto grid = bounds;
-    int colWidth = grid.getWidth() / 2;
-    int rowHeight = grid.getHeight() / 2;
+    int topPad = juce::jmax(0, (grid.getHeight() - encoderHeight) / 2);
+    grid.removeFromTop(topPad);
+    grid.setHeight(juce::jmin(encoderHeight, grid.getHeight()));
+
+    int cellWidth = encoders.empty() ? grid.getWidth() : grid.getWidth() / (int) encoders.size();
     for (size_t i = 0; i < encoders.size(); ++i)
     {
-        int row = (int) i / 2;
-        int col = (int) i % 2;
-        juce::Rectangle<int> cell(grid.getX() + col * colWidth, grid.getY() + row * rowHeight, colWidth, rowHeight);
-        encoders[i]->setBounds(cell.reduced(10));
+        juce::Rectangle<int> cell(grid.getX() + (int) i * cellWidth, grid.getY(), cellWidth, grid.getHeight());
+        encoders[i]->setBounds(cell.reduced(24, 6));
     }
 }
 
@@ -494,8 +538,10 @@ void SampleEditorContent::paint(juce::Graphics& g)
 // ---------------------------------------------------------------------------
 SampleEditorPanel::SampleEditorPanel(juce::AudioProcessorValueTreeState& state, std::array<SampleTrack, kNumTracks>& tracksToUse)
 {
+    for (int i = 0; i < kNumTracks; ++i)
+        trackNames[(size_t) i] = tracksToUse[(size_t) i].name;
+
     titleLabel.setFont(juce::Font(14.0f, juce::Font::bold));
-    titleLabel.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
     titleLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(titleLabel);
 
@@ -530,7 +576,18 @@ void SampleEditorPanel::showTrack(int trackIndex)
         pages[(size_t) i]->setVisible(i == currentTrack);
 
     updateTabColours();
+    updateTitle();
     resized();
+
+    if (onTrackChanged)
+        onTrackChanged(currentTrack);
+}
+
+void SampleEditorPanel::updateTitle()
+{
+    titleLabel.setText("EDIT SAMPLES — " + trackNames[(size_t) currentTrack].toUpperCase(),
+                        juce::dontSendNotification);
+    titleLabel.setColour(juce::Label::textColourId, DrumeeColours::forTrack(currentTrack));
 }
 
 void SampleEditorPanel::updateTabColours()
