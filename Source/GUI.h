@@ -121,7 +121,9 @@ private:
     int lastPaintedStep = -1;
 };
 
-class SampleSlotComponent : public juce::Component, public juce::FileDragAndDropTarget
+class SampleSlotComponent : public juce::Component,
+                             public juce::FileDragAndDropTarget,
+                             public juce::SettableTooltipClient
 {
 public:
     // compact = the small card used in the main window's bottom row.
