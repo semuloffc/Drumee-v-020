@@ -453,10 +453,34 @@ void SampleSlotComponent::mouseUp(const juce::MouseEvent& event)
 WaveformDisplay::WaveformDisplay(int trackIndex, SampleTrack& trackToUse)
     : track(trackToUse), accentColour(DrumeeColours::forTrack(trackIndex))
 {
+    startTimerHz(30);
 }
+
+WaveformDisplay::~WaveformDisplay() { stopTimer(); }
 
 void WaveformDisplay::resized() { rebuildPeaks(); }
 void WaveformDisplay::refresh() { rebuildPeaks(); repaint(); }
+
+void WaveformDisplay::timerCallback()
+{
+    int count = track.triggerCount.load(std::memory_order_relaxed);
+    if (count != lastSeenTriggerCount)
+    {
+        lastSeenTriggerCount = count;
+        animating = true;
+        animationStartMs = juce::Time::getMillisecondCounterHiRes();
+    }
+
+    if (animating)
+    {
+        double durationMs = track.loaded && track.sourceSampleRate > 0.0
+            ? (double) track.buffer.getNumSamples() / track.sourceSampleRate * 1000.0 : 0.0;
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - animationStartMs;
+        if (elapsed >= durationMs)
+            animating = false;
+        repaint();
+    }
+}
 
 void WaveformDisplay::rebuildPeaks()
 {
@@ -527,6 +551,23 @@ void WaveformDisplay::paint(juce::Graphics& g)
 
     g.setColour(DrumeeColours::outline.withAlpha(0.5f));
     g.drawLine(bounds.getX(), midY, bounds.getRight(), midY, 1.0f);
+
+    if (animating)
+    {
+        double durationMs = track.sourceSampleRate > 0.0
+            ? (double) track.buffer.getNumSamples() / track.sourceSampleRate * 1000.0 : 0.0;
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - animationStartMs;
+        float frac = durationMs > 0.0 ? (float) juce::jlimit(0.0, 1.0, elapsed / durationMs) : 1.0f;
+        float x = bounds.getX() + frac * bounds.getWidth();
+
+        // Same sweep-marker language as EnvelopeVisualizer's playback
+        // marker (accent line + bright dot) so the two graphs read as one
+        // connected, consistently-animated block.
+        g.setColour(accentColour.withAlpha(0.45f));
+        g.drawLine(x, bounds.getY(), x, bounds.getBottom(), 1.0f);
+        g.setColour(DrumeeColours::textPrimary);
+        g.fillEllipse(juce::Rectangle<float>(5.0f, 5.0f).withCentre({ x, midY }));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,14 +599,20 @@ EnvelopeVisualizer::EnvelopeVisualizer(juce::AudioProcessorValueTreeState& state
     decayParam   = state.getParameter(perTrackParamID(PitchSoundParamIDs::decay, trackIndex));
     sustainParam = state.getParameter(perTrackParamID(EnvelopeParamIDs::sustain, trackIndex));
     releaseParam = state.getParameter(perTrackParamID(EnvelopeParamIDs::release, trackIndex));
+    attackCurveParam  = state.getParameter(perTrackParamID(EnvelopeCurveParamIDs::attackCurve, trackIndex));
+    decayCurveParam   = state.getParameter(perTrackParamID(EnvelopeCurveParamIDs::decayCurve, trackIndex));
+    releaseCurveParam = state.getParameter(perTrackParamID(EnvelopeCurveParamIDs::releaseCurve, trackIndex));
 
     attackRaw  = state.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::attack, trackIndex));
     decayRaw   = state.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::decay, trackIndex));
     sustainRaw = state.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::sustain, trackIndex));
     releaseRaw = state.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::release, trackIndex));
+    attackCurveRaw  = state.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::attackCurve, trackIndex));
+    decayCurveRaw   = state.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::decayCurve, trackIndex));
+    releaseCurveRaw = state.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::releaseCurve, trackIndex));
 
     setInterceptsMouseClicks(true, false);
-    setTooltip("Drag the points to shape Attack / Decay & Sustain / Release");
+    setTooltip("Drag the points to shape Attack / Decay & Sustain / Release \xc2\xb7 drag a segment to bend its curve");
     startTimerHz(30);
 }
 
@@ -602,6 +649,37 @@ EnvelopeVisualizer::Geometry EnvelopeVisualizer::buildGeometry() const
     return geo;
 }
 
+// Builds the same warped-then-eased shape the DSP actually plays (see
+// envelopeTensionCurve() / SamplePlayerVoice::envelopeGainAt()), sampled
+// into a polyline dense enough to read as smooth. Attack is drawn as pure
+// tension (matching its plain-linear-at-curve==0 DSP shape); Decay and
+// Release additionally smoothstep on top, matching their DSP shape too.
+juce::Path EnvelopeVisualizer::buildCurvedShape(const Geometry& geo) const
+{
+    constexpr int kSteps = 24;
+
+    auto addSegment = [] (juce::Path& path, juce::Point<float> from, juce::Point<float> to,
+                           float curve, bool smoothstepToo)
+    {
+        for (int i = 1; i <= kSteps; ++i)
+        {
+            float frac = (float) i / (float) kSteps;
+            float shaped = envelopeTensionCurve(frac, curve);
+            if (smoothstepToo)
+                shaped = shaped * shaped * (3.0f - 2.0f * shaped);
+            path.lineTo(from.x + (to.x - from.x) * frac, from.y + (to.y - from.y) * shaped);
+        }
+    };
+
+    juce::Path shape;
+    shape.startNewSubPath(geo.p0);
+    addSegment(shape, geo.p0, geo.p1, getAttackCurve(), false);
+    addSegment(shape, geo.p1, geo.p2, getDecayCurve(), true);
+    shape.lineTo(geo.p3);
+    addSegment(shape, geo.p3, geo.p4, getReleaseCurve(), true);
+    return shape;
+}
+
 EnvelopeVisualizer::DragTarget EnvelopeVisualizer::hitTest(juce::Point<float> position, const Geometry& geo) const
 {
     struct Candidate { DragTarget target; juce::Point<float> point; };
@@ -626,6 +704,40 @@ EnvelopeVisualizer::DragTarget EnvelopeVisualizer::hitTest(juce::Point<float> po
     return best;
 }
 
+// Grabbing anywhere along a segment (not just its endpoints) lets the
+// curve be bent Serum-style. Checked only after hitTest() finds no point
+// nearby, so a click on a breakpoint always drags the point, never the
+// curve underneath it.
+EnvelopeVisualizer::DragTarget EnvelopeVisualizer::hitTestCurve(juce::Point<float> position, const Geometry& geo) const
+{
+    constexpr float kCurveHitBand = 14.0f;
+
+    struct Segment { DragTarget target; juce::Point<float> from, to; float curve; bool smoothstepToo; };
+    const Segment segments[] = {
+        { DragTarget::attackCurve,  geo.p0, geo.p1, getAttackCurve(),  false },
+        { DragTarget::decayCurve,   geo.p1, geo.p2, getDecayCurve(),   true },
+        { DragTarget::releaseCurve, geo.p3, geo.p4, getReleaseCurve(), true }
+    };
+
+    for (auto& s : segments)
+    {
+        float minX = juce::jmin(s.from.x, s.to.x);
+        float maxX = juce::jmax(s.from.x, s.to.x);
+        if (position.x < minX || position.x > maxX || maxX - minX < 1.0f)
+            continue;
+
+        float frac = (position.x - s.from.x) / (s.to.x - s.from.x);
+        float shaped = envelopeTensionCurve(frac, s.curve);
+        if (s.smoothstepToo)
+            shaped = shaped * shaped * (3.0f - 2.0f * shaped);
+        float curveY = s.from.y + (s.to.y - s.from.y) * shaped;
+
+        if (std::abs(position.y - curveY) <= kCurveHitBand)
+            return s.target;
+    }
+    return DragTarget::none;
+}
+
 void EnvelopeVisualizer::setNormalisedValue(juce::RangedAudioParameter* param, float realValue) const
 {
     if (param != nullptr)
@@ -636,6 +748,8 @@ void EnvelopeVisualizer::mouseDown(const juce::MouseEvent& event)
 {
     auto geo = buildGeometry();
     dragging = hitTest(event.position, geo);
+    if (dragging == DragTarget::none)
+        dragging = hitTestCurve(event.position, geo);
 
     if (dragging == DragTarget::attackPoint && attackParam != nullptr)
         attackParam->beginChangeGesture();
@@ -646,6 +760,19 @@ void EnvelopeVisualizer::mouseDown(const juce::MouseEvent& event)
     }
     else if (dragging == DragTarget::releasePoint && releaseParam != nullptr)
         releaseParam->beginChangeGesture();
+    else if (dragging == DragTarget::attackCurve || dragging == DragTarget::decayCurve || dragging == DragTarget::releaseCurve)
+    {
+        curveDragStart = event.position;
+        curveDragStartValue = dragging == DragTarget::attackCurve ? getAttackCurve()
+                             : dragging == DragTarget::decayCurve  ? getDecayCurve()
+                                                                    : getReleaseCurve();
+
+        auto* curveParam = dragging == DragTarget::attackCurve ? attackCurveParam
+                          : dragging == DragTarget::decayCurve  ? decayCurveParam
+                                                                  : releaseCurveParam;
+        if (curveParam != nullptr)
+            curveParam->beginChangeGesture();
+    }
 
     if (dragging != DragTarget::none)
         repaint();
@@ -685,6 +812,25 @@ void EnvelopeVisualizer::mouseDrag(const juce::MouseEvent& event)
             setNormalisedValue(releaseParam, mapXToMs(event.position.x, geo.zoneRelease, EnvelopeRanges::releaseMaxMs));
             break;
 
+        case DragTarget::attackCurve:
+        case DragTarget::decayCurve:
+        case DragTarget::releaseCurve:
+        {
+            // Dragging the segment upward pulls the curve up toward the top
+            // of the graph (fast-start/concave for a rising segment);
+            // dragging down pushes it toward the bottom (slow-start/convex)
+            // - i.e. the curve visibly follows the cursor's vertical travel,
+            // same direct-manipulation feel as dragging the breakpoints.
+            auto* curveParam = dragging == DragTarget::attackCurve ? attackCurveParam
+                              : dragging == DragTarget::decayCurve  ? decayCurveParam
+                                                                      : releaseCurveParam;
+            float delta = geo.area.getHeight() > 0.0f
+                ? (event.position.y - curveDragStart.y) / geo.area.getHeight() * 2.0f : 0.0f;
+            float newValue = juce::jlimit(-1.0f, 1.0f, curveDragStartValue + delta);
+            setNormalisedValue(curveParam, newValue);
+            break;
+        }
+
         case DragTarget::none:
         default:
             break;
@@ -704,6 +850,12 @@ void EnvelopeVisualizer::mouseUp(const juce::MouseEvent&)
     }
     else if (dragging == DragTarget::releasePoint && releaseParam != nullptr)
         releaseParam->endChangeGesture();
+    else if (dragging == DragTarget::attackCurve && attackCurveParam != nullptr)
+        attackCurveParam->endChangeGesture();
+    else if (dragging == DragTarget::decayCurve && decayCurveParam != nullptr)
+        decayCurveParam->endChangeGesture();
+    else if (dragging == DragTarget::releaseCurve && releaseCurveParam != nullptr)
+        releaseCurveParam->endChangeGesture();
 
     dragging = DragTarget::none;
     repaint();
@@ -713,6 +865,8 @@ void EnvelopeVisualizer::mouseMove(const juce::MouseEvent& event)
 {
     auto geo = buildGeometry();
     auto newHover = hitTest(event.position, geo);
+    if (newHover == DragTarget::none)
+        newHover = hitTestCurve(event.position, geo);
     if (newHover != hovered)
     {
         hovered = newHover;
@@ -741,8 +895,9 @@ juce::Point<float> EnvelopeVisualizer::pointAtElapsed(const Geometry& geo, doubl
     if (t <= attackMs)
     {
         double frac = attackMs > 0.0 ? t / attackMs : 1.0;
+        float shaped = envelopeTensionCurve((float) frac, getAttackCurve());
         float x = geo.zoneAttack.getX() + (float) (t / (double) EnvelopeRanges::attackMaxMs) * geo.zoneAttack.getWidth();
-        float y = juce::jmap((float) frac, 0.0f, 1.0f, geo.area.getBottom(), geo.area.getY());
+        float y = juce::jmap(shaped, 0.0f, 1.0f, geo.area.getBottom(), geo.area.getY());
         return { x, y };
     }
     t -= attackMs;
@@ -750,7 +905,8 @@ juce::Point<float> EnvelopeVisualizer::pointAtElapsed(const Geometry& geo, doubl
     if (t <= decayMs)
     {
         double frac = decayMs > 0.0 ? t / decayMs : 1.0;
-        float eased = (float) (frac * frac * (3.0 - 2.0 * frac));
+        float warped = envelopeTensionCurve((float) frac, getDecayCurve());
+        float eased = warped * warped * (3.0f - 2.0f * warped);
         float x = geo.zoneDecay.getX() + (float) (t / (double) EnvelopeRanges::decayMaxMs) * geo.zoneDecay.getWidth();
         float y = juce::jmap(eased, 0.0f, 1.0f, geo.area.getY(), geo.p2.y);
         return { x, y };
@@ -766,7 +922,8 @@ juce::Point<float> EnvelopeVisualizer::pointAtElapsed(const Geometry& geo, doubl
     t -= kSustainHoldMs;
 
     double frac = juce::jlimit(0.0, 1.0, releaseMs > 0.0 ? t / releaseMs : 1.0);
-    float eased = (float) (frac * frac * (3.0 - 2.0 * frac));
+    float warped = envelopeTensionCurve((float) frac, getReleaseCurve());
+    float eased = warped * warped * (3.0f - 2.0f * warped);
     float x = geo.zoneRelease.getX()
              + (float) juce::jlimit(0.0, 1.0, t / (double) EnvelopeRanges::releaseMaxMs) * geo.zoneRelease.getWidth();
     float y = juce::jmap(eased, 0.0f, 1.0f, geo.p2.y, geo.area.getBottom());
@@ -829,10 +986,25 @@ void EnvelopeVisualizer::drawValueChip(juce::Graphics& g, const Geometry& geo) c
         text = "Decay " + juce::String(getDecay(), 0) + " ms  \xc2\xb7  Sustain " + juce::String(getSustain01() * 100.0f, 0) + "%";
         anchor = geo.p2;
     }
-    else
+    else if (target == DragTarget::releasePoint)
     {
         text = "Release " + juce::String(getRelease(), 0) + " ms";
         anchor = geo.p4;
+    }
+    else if (target == DragTarget::attackCurve)
+    {
+        text = "Attack Curve " + juce::String(getAttackCurve() * 100.0f, 0) + "%";
+        anchor = { (geo.p0.x + geo.p1.x) * 0.5f, (geo.p0.y + geo.p1.y) * 0.5f };
+    }
+    else if (target == DragTarget::decayCurve)
+    {
+        text = "Decay Curve " + juce::String(getDecayCurve() * 100.0f, 0) + "%";
+        anchor = { (geo.p1.x + geo.p2.x) * 0.5f, (geo.p1.y + geo.p2.y) * 0.5f };
+    }
+    else
+    {
+        text = "Release Curve " + juce::String(getReleaseCurve() * 100.0f, 0) + "%";
+        anchor = { (geo.p3.x + geo.p4.x) * 0.5f, (geo.p3.y + geo.p4.y) * 0.5f };
     }
 
     juce::Font font(11.5f, juce::Font::bold);
@@ -870,12 +1042,7 @@ void EnvelopeVisualizer::paint(juce::Graphics& g)
     g.drawLine(geo.area.getX(), midY, geo.area.getRight(), midY, 1.0f);
     g.drawLine(geo.area.getX(), geo.area.getBottom(), geo.area.getRight(), geo.area.getBottom(), 1.0f);
 
-    juce::Path shape;
-    shape.startNewSubPath(geo.p0);
-    shape.lineTo(geo.p1);
-    shape.quadraticTo({ (geo.p1.x + geo.p2.x) * 0.5f, geo.p1.y }, geo.p2);
-    shape.lineTo(geo.p3);
-    shape.quadraticTo({ (geo.p3.x + geo.p4.x) * 0.5f, geo.p3.y }, geo.p4);
+    juce::Path shape = buildCurvedShape(geo);
 
     juce::Path fill = shape;
     fill.lineTo(geo.p4.x, geo.area.getBottom());
@@ -910,14 +1077,6 @@ void EnvelopeVisualizer::paint(juce::Graphics& g)
 // ---------------------------------------------------------------------------
 SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorValueTreeState& state, SampleTrack& trackToUse)
 {
-    juce::Colour trackAccent = DrumeeColours::forTrack(trackIndex);
-
-    sampleNameLabel.setText(trackToUse.name, juce::dontSendNotification);
-    sampleNameLabel.setFont(juce::Font(20.0f, juce::Font::bold));
-    sampleNameLabel.setColour(juce::Label::textColourId, trackAccent);
-    sampleNameLabel.setJustificationType(juce::Justification::centredLeft);
-    addAndMakeVisible(sampleNameLabel);
-
     slot = std::make_unique<SampleSlotComponent>(trackIndex, trackToUse, false);
     slot->onLoadRequested = [this](int t) { if (onLoadRequested) onLoadRequested(t); };
     slot->onFileDropped = [this](int t, const juce::File& f) { if (onFileDropped) onFileDropped(t, f); };
@@ -971,9 +1130,6 @@ void SampleEditorContent::resized()
     constexpr int margin = 20;
     auto bounds = getLocalBounds().reduced(margin);
 
-    sampleNameLabel.setBounds(bounds.removeFromTop(20));
-    bounds.removeFromTop(6);
-
     // Top row: file slot (left) and the compact Pitch & Sound knobs (right)
     // share one row, leaving most of the page's height for the waveform +
     // envelope block below - the main showcase of this page.
@@ -998,13 +1154,18 @@ void SampleEditorContent::resized()
     sectionEnvelope.setBounds(bounds.removeFromTop(16));
     bounds.removeFromTop(6);
 
-    // Waveform strip shares the envelope graph's exact x-position and width
-    // (computed once here) so the two form one aligned block - the sample's
-    // content sits directly above the envelope shaping it.
+    // Waveform and envelope now form one equal-sized pair: same width
+    // (graphWidth, computed once here) and same height (the remaining
+    // vertical space split evenly) - the sample's content and the envelope
+    // shaping it read as two panes of one block instead of a thin strip
+    // sitting above the main graph.
     int graphWidth = (int) (bounds.getWidth() * 0.56f);
-    auto waveformArea = bounds.removeFromTop(46);
+    constexpr int stackGap = 10;
+    int pairHeight = (bounds.getHeight() - stackGap) / 2;
+
+    auto waveformArea = bounds.removeFromTop(pairHeight);
     waveformDisplay->setBounds(waveformArea.getX(), waveformArea.getY(), graphWidth, waveformArea.getHeight());
-    bounds.removeFromTop(8);
+    bounds.removeFromTop(stackGap);
 
     // Envelope section: the interactive graph takes the same left column as
     // the waveform above it, its five knobs (Attack/Decay/Sustain/Release/

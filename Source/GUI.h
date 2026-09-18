@@ -173,21 +173,31 @@ private:
 // envelope graph in its own track colour so the two form one connected
 // visual block. Rebuilt whenever a new file is loaded into the track.
 // ---------------------------------------------------------------------------
-class WaveformDisplay : public juce::Component
+class WaveformDisplay : public juce::Component, private juce::Timer
 {
 public:
     WaveformDisplay(int trackIndex, SampleTrack& trackToUse);
+    ~WaveformDisplay() override;
 
     void paint(juce::Graphics&) override;
     void resized() override;
     void refresh();
 
 private:
+    void timerCallback() override;
     void rebuildPeaks();
 
     SampleTrack& track;
     juce::Colour accentColour;
     std::vector<float> peakMin, peakMax;
+
+    // Same trigger-detection/sweep approach as EnvelopeVisualizer: poll the
+    // track's atomic hit counter and, on a new hit, sweep a playhead across
+    // the full sample duration (not just the envelope's time) so the marker
+    // tracks what is actually audible in the waveform above.
+    int lastSeenTriggerCount = 0;
+    double animationStartMs = 0.0;
+    bool animating = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -211,7 +221,11 @@ public:
     void mouseExit(const juce::MouseEvent&) override;
 
 private:
-    enum class DragTarget { none, attackPoint, decayPoint, releasePoint };
+    // *Point targets drag the breakpoints (time/level). *Curve targets grab
+    // the segment between two breakpoints anywhere along its length and bend
+    // it, Serum-style - the classic "second layer" of ADSR editing on top of
+    // the point drag that was already here.
+    enum class DragTarget { none, attackPoint, decayPoint, releasePoint, attackCurve, decayCurve, releaseCurve };
 
     // Zone rectangles depend only on the component's bounds; the points
     // (p1..p4) depend on the current parameter values too, so they are
@@ -225,15 +239,20 @@ private:
     void timerCallback() override;
     Geometry buildGeometry() const;
     DragTarget hitTest(juce::Point<float> position, const Geometry&) const;
+    DragTarget hitTestCurve(juce::Point<float> position, const Geometry&) const;
     juce::Point<float> pointAtElapsed(const Geometry&, double elapsedMs) const;
     void drawPoint(juce::Graphics&, juce::Point<float>, bool active) const;
     void drawValueChip(juce::Graphics&, const Geometry&) const;
     void setNormalisedValue(juce::RangedAudioParameter* param, float realValue) const;
+    juce::Path buildCurvedShape(const Geometry&) const;
 
     float getAttack() const  { return attackRaw != nullptr ? attackRaw->load() : 0.0f; }
     float getDecay() const   { return decayRaw != nullptr ? decayRaw->load() : 0.0f; }
     float getSustain01() const { return sustainRaw != nullptr ? sustainRaw->load() / 100.0f : 0.0f; }
     float getRelease() const { return releaseRaw != nullptr ? releaseRaw->load() : 0.0f; }
+    float getAttackCurve() const  { return attackCurveRaw != nullptr ? attackCurveRaw->load() : 0.0f; }
+    float getDecayCurve() const   { return decayCurveRaw != nullptr ? decayCurveRaw->load() : 0.0f; }
+    float getReleaseCurve() const { return releaseCurveRaw != nullptr ? releaseCurveRaw->load() : 0.0f; }
 
     SampleTrack& track;
     juce::Colour accentColour;
@@ -242,14 +261,27 @@ private:
     juce::RangedAudioParameter* decayParam = nullptr;
     juce::RangedAudioParameter* sustainParam = nullptr;
     juce::RangedAudioParameter* releaseParam = nullptr;
+    juce::RangedAudioParameter* attackCurveParam = nullptr;
+    juce::RangedAudioParameter* decayCurveParam = nullptr;
+    juce::RangedAudioParameter* releaseCurveParam = nullptr;
 
     std::atomic<float>* attackRaw = nullptr;
     std::atomic<float>* decayRaw = nullptr;
     std::atomic<float>* sustainRaw = nullptr;
     std::atomic<float>* releaseRaw = nullptr;
+    std::atomic<float>* attackCurveRaw = nullptr;
+    std::atomic<float>* decayCurveRaw = nullptr;
+    std::atomic<float>* releaseCurveRaw = nullptr;
 
     DragTarget dragging = DragTarget::none;
     DragTarget hovered = DragTarget::none;
+
+    // Curve drags are relative: how far the mouse has moved from where the
+    // drag started, added to whatever the curve value already was - not an
+    // absolute mapping of mouse position - so grabbing a segment never
+    // snaps it to a new shape the instant you click.
+    juce::Point<float> curveDragStart;
+    float curveDragStartValue = 0.0f;
 
     int lastSeenTriggerCount = 0;
     double animationStartMs = 0.0;
@@ -277,7 +309,6 @@ public:
     std::function<void(int, const juce::File&)> onFileDropped;
 
 private:
-    juce::Label sampleNameLabel;
     juce::Label sectionPitch { {}, "PITCH & SOUND" };
     juce::Label sectionEnvelope { {}, "ENVELOPE" };
     std::unique_ptr<SampleSlotComponent> slot;

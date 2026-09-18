@@ -2,11 +2,27 @@
 #include <JuceHeader.h>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <functional>
 
 static constexpr int kNumTracks = 5;
 static constexpr int kNumSteps = 16;
 static constexpr int kMaxVoicesPerTrack = 4;
+
+// Serum-style envelope segment shaping: tension in [-1, 1], 0 = linear.
+// Positive bends the segment below the straight line (slow start,
+// accelerating toward the end - "convex"); negative bends it above (fast
+// start, decelerating - "concave"). Shared by the DSP engine (actual
+// audio envelope) and the GUI's interactive graph, so what gets dragged
+// on screen is exactly what plays.
+inline float envelopeTensionCurve(float x, float tension)
+{
+    x = juce::jlimit(0.0f, 1.0f, x);
+    float k = juce::jlimit(-0.999f, 0.999f, tension);
+    if (std::abs(k) < 1.0e-4f)
+        return x;
+    return (x - k * x) / (k - 2.0f * k * x + 1.0f);
+}
 
 struct StepData
 {
@@ -24,6 +40,7 @@ public:
     void start(const juce::AudioBuffer<float>* buffer, double sourceSampleRate,
                 double outputSampleRate, float pitchSemitones, float gain,
                 float attackMs, float decayMs, float sustainLevel, float releaseMs,
+                float attackCurve, float decayCurve, float releaseCurve,
                 int startDelaySamples);
     void renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples);
     bool active() const { return isActive; }
@@ -44,6 +61,9 @@ private:
     double envSustainLevel = 0.0;
     double envReleaseStartSample = 0.0;
     double envElapsedSamples = 0.0;
+    float envAttackCurve = 0.0f;
+    float envDecayCurve = 0.0f;
+    float envReleaseCurve = 0.0f;
 };
 
 class SampleTrack
@@ -63,6 +83,7 @@ public:
     bool loadFile(const juce::File& file, juce::AudioFormatManager& formatManager);
     void trigger(double outputSampleRate, float pitchSemitones, float velocityGain,
                  float attackMs, float decayMs, float sustainLevel, float releaseMs,
+                 float attackCurve, float decayCurve, float releaseCurve,
                  int startDelaySamples);
     void renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples);
 

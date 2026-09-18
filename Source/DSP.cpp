@@ -3,6 +3,7 @@
 void SamplePlayerVoice::start(const juce::AudioBuffer<float>* buf, double sourceSampleRate,
                                double outputSampleRate, float pitchSemitones, float gain,
                                float attackMs, float decayMs, float sustainLevel, float releaseMs,
+                               float attackCurve, float decayCurve, float releaseCurve,
                                int startDelaySamples)
 {
     sourceBuffer = buf;
@@ -16,6 +17,9 @@ void SamplePlayerVoice::start(const juce::AudioBuffer<float>* buf, double source
     envDecaySamples   = juce::jmax(0.0, (double) decayMs / 1000.0 * outputSampleRate);
     envReleaseSamples = juce::jmax(1.0, (double) releaseMs / 1000.0 * outputSampleRate);
     envSustainLevel   = juce::jlimit(0.0, 1.0, (double) sustainLevel);
+    envAttackCurve  = attackCurve;
+    envDecayCurve   = decayCurve;
+    envReleaseCurve = releaseCurve;
 
     int srcLength = sourceBuffer != nullptr ? sourceBuffer->getNumSamples() : 0;
     double playbackDurationSamples = (ratio > 0.0 && srcLength > 1)
@@ -32,21 +36,31 @@ void SamplePlayerVoice::start(const juce::AudioBuffer<float>* buf, double source
     isActive = sourceBuffer != nullptr && srcLength > 0;
 }
 
-// Attack ramps linearly 0 -> 1, Decay eases 1 -> sustain level, the level
-// then holds at Sustain until Release eases it back down to 0. Elapsed time
-// is measured in real output samples (not resampled playback position) so
-// the envelope timing stays correct regardless of pitch shifting.
+// Attack ramps 0 -> 1, Decay shapes 1 -> sustain level, the level then
+// holds at Sustain until Release shapes it back down to 0. Each stage's
+// shape is controlled by its own tension value (Serum-style: 0 linear,
+// positive convex, negative concave - see envelopeTensionCurve()), so the
+// audible envelope always matches the curve dragged on screen. Elapsed
+// time is measured in real output samples (not resampled playback
+// position) so the envelope timing stays correct regardless of pitch shifting.
 double SamplePlayerVoice::envelopeGainAt(double elapsedSamples) const
 {
     if (elapsedSamples < envAttackSamples)
-        return envAttackSamples > 0.0 ? elapsedSamples / envAttackSamples : 1.0;
+    {
+        double frac = envAttackSamples > 0.0 ? elapsedSamples / envAttackSamples : 1.0;
+        return (double) envelopeTensionCurve((float) frac, envAttackCurve);
+    }
 
     if (elapsedSamples < envAttackSamples + envDecaySamples)
     {
         double local = elapsedSamples - envAttackSamples;
         double frac = envDecaySamples > 0.0 ? local / envDecaySamples : 1.0;
-        frac = frac * frac * (3.0 - 2.0 * frac); // smoothstep ease, no audible "kink" at the joins
-        return 1.0 + (envSustainLevel - 1.0) * frac;
+        // Tension warps the progress first, then the existing smoothstep
+        // ease is applied on top - at curve == 0 this reduces exactly to
+        // the pre-0.2.7 smoothstep shape, so old presets sound unchanged.
+        double warped = (double) envelopeTensionCurve((float) frac, envDecayCurve);
+        double shaped = warped * warped * (3.0 - 2.0 * warped);
+        return 1.0 + (envSustainLevel - 1.0) * shaped;
     }
 
     if (elapsedSamples < envReleaseStartSample)
@@ -54,8 +68,9 @@ double SamplePlayerVoice::envelopeGainAt(double elapsedSamples) const
 
     double local = elapsedSamples - envReleaseStartSample;
     double frac = juce::jlimit(0.0, 1.0, envReleaseSamples > 0.0 ? local / envReleaseSamples : 1.0);
-    frac = frac * frac * (3.0 - 2.0 * frac);
-    return envSustainLevel * (1.0 - frac);
+    double warped = (double) envelopeTensionCurve((float) frac, envReleaseCurve);
+    double shaped = warped * warped * (3.0 - 2.0 * warped);
+    return envSustainLevel * (1.0 - shaped);
 }
 
 void SamplePlayerVoice::renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples)
@@ -129,13 +144,15 @@ bool SampleTrack::loadFile(const juce::File& file, juce::AudioFormatManager& for
 
 void SampleTrack::trigger(double outputSampleRate, float pitchSemitones, float velocityGain,
                            float attackMs, float decayMs, float sustainLevel, float releaseMs,
+                           float attackCurve, float decayCurve, float releaseCurve,
                            int startDelaySamples)
 {
     if (! loaded)
         return;
 
     voices[nextVoice].start(&buffer, sourceSampleRate, outputSampleRate, pitchSemitones, velocityGain,
-                             attackMs, decayMs, sustainLevel, releaseMs, startDelaySamples);
+                             attackMs, decayMs, sustainLevel, releaseMs,
+                             attackCurve, decayCurve, releaseCurve, startDelaySamples);
     nextVoice = (nextVoice + 1) % kMaxVoicesPerTrack;
     triggerCount.fetch_add(1, std::memory_order_relaxed);
 }

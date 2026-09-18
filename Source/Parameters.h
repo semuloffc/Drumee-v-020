@@ -43,6 +43,16 @@ namespace EnvelopeParamIDs
     static const juce::String release = "release";
 }
 
+// 0.2.7: Serum-style segment shaping. Not shown as knobs - dragged directly
+// on the Attack/Decay/Release segments of the envelope graph, same as the
+// breakpoints. -1..1, 0 = linear (identical to the pre-0.2.7 shape).
+namespace EnvelopeCurveParamIDs
+{
+    static const juce::String attackCurve  = "attackCurve";
+    static const juce::String decayCurve   = "decayCurve";
+    static const juce::String releaseCurve = "releaseCurve";
+}
+
 // Shared with the interactive envelope graph in GUI.cpp so the knob ranges
 // and the on-screen point positions can never drift apart.
 namespace EnvelopeRanges
@@ -171,6 +181,22 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             perTrackParamID(EnvelopeParamIDs::release, t), "Release " + juce::String(t + 1),
             juce::NormalisableRange<float>(EnvelopeRanges::releaseMinMs, EnvelopeRanges::releaseMaxMs, 0.1f), 40.0f, "ms"));
+
+        // 0.2.7: per-segment curve shape, dragged directly on the graph
+        // (Serum-style). Default 0 = linear/smoothstep, i.e. identical to
+        // the pre-0.2.7 shape - existing presets are unaffected until the
+        // curve is dragged.
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            perTrackParamID(EnvelopeCurveParamIDs::attackCurve, t), "Attack Curve " + juce::String(t + 1),
+            juce::NormalisableRange<float>(-1.0f, 1.0f, 0.001f), 0.0f, ""));
+
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            perTrackParamID(EnvelopeCurveParamIDs::decayCurve, t), "Decay Curve " + juce::String(t + 1),
+            juce::NormalisableRange<float>(-1.0f, 1.0f, 0.001f), 0.0f, ""));
+
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            perTrackParamID(EnvelopeCurveParamIDs::releaseCurve, t), "Release Curve " + juce::String(t + 1),
+            juce::NormalisableRange<float>(-1.0f, 1.0f, 0.001f), 0.0f, ""));
     }
 
     return { params.begin(), params.end() };

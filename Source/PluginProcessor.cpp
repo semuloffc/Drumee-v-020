@@ -70,6 +70,9 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
     std::array<float, kNumTracks> sustain {};
     std::array<float, kNumTracks> release {};
     std::array<float, kNumTracks> volume {};
+    std::array<float, kNumTracks> attackCurve {};
+    std::array<float, kNumTracks> decayCurve {};
+    std::array<float, kNumTracks> releaseCurve {};
 
     for (int t = 0; t < kNumTracks; ++t)
     {
@@ -80,6 +83,9 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
         sustain[(size_t) t]   = apvts.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::sustain, t))->load() / 100.0f;
         release[(size_t) t]   = apvts.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::release, t))->load();
         volume[(size_t) t]    = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::volume, t))->load();
+        attackCurve[(size_t) t]  = apvts.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::attackCurve, t))->load();
+        decayCurve[(size_t) t]   = apvts.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::decayCurve, t))->load();
+        releaseCurve[(size_t) t] = apvts.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::releaseCurve, t))->load();
     }
 
     double outputSampleRate = getSampleRate();
@@ -87,13 +93,16 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
 
     sequencer.process(buffer.getNumSamples(), hostBpm, hostIsPlaying,
                        nudge, swing, humanize, pitchRand, velocity, ratchet, probability,
-                       [&tracksRef, outputSampleRate, &attack, &decay, &sustain, &release, &volume]
+                       [&tracksRef, outputSampleRate, &attack, &decay, &sustain, &release, &volume,
+                        &attackCurve, &decayCurve, &releaseCurve]
                        (int track, int sampleOffset, float vel, float pitchOffset)
                        {
                            float trackGain = vel * volume[(size_t) track];
                            tracksRef[(size_t) track].trigger(outputSampleRate, pitchOffset, trackGain,
                                                               attack[(size_t) track], decay[(size_t) track],
                                                               sustain[(size_t) track], release[(size_t) track],
+                                                              attackCurve[(size_t) track], decayCurve[(size_t) track],
+                                                              releaseCurve[(size_t) track],
                                                               sampleOffset);
                        });
 
