@@ -1,19 +1,61 @@
 #include "DSP.h"
 
 void SamplePlayerVoice::start(const juce::AudioBuffer<float>* buf, double sourceSampleRate,
-                               double outputSampleRate, float pitchSemitones, float gain, float decayMs,
+                               double outputSampleRate, float pitchSemitones, float gain,
+                               float attackMs, float decayMs, float sustainLevel, float releaseMs,
                                int startDelaySamples)
 {
     sourceBuffer = buf;
     position = 0.0;
     ratio = std::pow(2.0, pitchSemitones / 12.0) * (sourceSampleRate / outputSampleRate);
     gainLevel = gain;
-    envelope = 1.0;
     delaySamples = juce::jmax(0, startDelaySamples);
+    envElapsedSamples = 0.0;
 
-    double decaySamples = juce::jmax(1.0, (decayMs / 1000.0) * outputSampleRate);
-    envelopeDecayPerSample = std::pow(0.0005, 1.0 / decaySamples);
-    isActive = sourceBuffer != nullptr && sourceBuffer->getNumSamples() > 0;
+    envAttackSamples  = juce::jmax(0.0, (double) attackMs / 1000.0 * outputSampleRate);
+    envDecaySamples   = juce::jmax(0.0, (double) decayMs / 1000.0 * outputSampleRate);
+    envReleaseSamples = juce::jmax(1.0, (double) releaseMs / 1000.0 * outputSampleRate);
+    envSustainLevel   = juce::jlimit(0.0, 1.0, (double) sustainLevel);
+
+    int srcLength = sourceBuffer != nullptr ? sourceBuffer->getNumSamples() : 0;
+    double playbackDurationSamples = (ratio > 0.0 && srcLength > 1)
+        ? (double) (srcLength - 1) / ratio
+        : 0.0;
+
+    // Release lands at the natural end of the sample by default; if the
+    // sample is too short to fit Attack+Decay+Release, Release simply
+    // starts as soon as Decay ends instead (its tail gets cut short by the
+    // sample running out, same as any other stage would).
+    envReleaseStartSample = juce::jmax(envAttackSamples + envDecaySamples,
+                                        playbackDurationSamples - envReleaseSamples);
+
+    isActive = sourceBuffer != nullptr && srcLength > 0;
+}
+
+// Attack ramps linearly 0 -> 1, Decay eases 1 -> sustain level, the level
+// then holds at Sustain until Release eases it back down to 0. Elapsed time
+// is measured in real output samples (not resampled playback position) so
+// the envelope timing stays correct regardless of pitch shifting.
+double SamplePlayerVoice::envelopeGainAt(double elapsedSamples) const
+{
+    if (elapsedSamples < envAttackSamples)
+        return envAttackSamples > 0.0 ? elapsedSamples / envAttackSamples : 1.0;
+
+    if (elapsedSamples < envAttackSamples + envDecaySamples)
+    {
+        double local = elapsedSamples - envAttackSamples;
+        double frac = envDecaySamples > 0.0 ? local / envDecaySamples : 1.0;
+        frac = frac * frac * (3.0 - 2.0 * frac); // smoothstep ease, no audible "kink" at the joins
+        return 1.0 + (envSustainLevel - 1.0) * frac;
+    }
+
+    if (elapsedSamples < envReleaseStartSample)
+        return envSustainLevel;
+
+    double local = elapsedSamples - envReleaseStartSample;
+    double frac = juce::jlimit(0.0, 1.0, envReleaseSamples > 0.0 ? local / envReleaseSamples : 1.0);
+    frac = frac * frac * (3.0 - 2.0 * frac);
+    return envSustainLevel * (1.0 - frac);
 }
 
 void SamplePlayerVoice::renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples)
@@ -45,9 +87,17 @@ void SamplePlayerVoice::renderNextBlock(juce::AudioBuffer<float>& output, int st
             break;
         }
 
+        if (envElapsedSamples >= envReleaseStartSample + envReleaseSamples)
+        {
+            isActive = false;
+            break;
+        }
+
         int idx0 = (int) position;
         int idx1 = juce::jmin(idx0 + 1, srcLength - 1);
         float frac = (float) (position - (double) idx0);
+
+        double envGain = envelopeGainAt(envElapsedSamples);
 
         for (int ch = 0; ch < outChannels; ++ch)
         {
@@ -55,17 +105,11 @@ void SamplePlayerVoice::renderNextBlock(juce::AudioBuffer<float>& output, int st
             float s0 = sourceBuffer->getSample(srcCh, idx0);
             float s1 = sourceBuffer->getSample(srcCh, idx1);
             float sample = s0 + (s1 - s0) * frac;
-            output.addSample(ch, startSample + i, sample * gainLevel * (float) envelope);
+            output.addSample(ch, startSample + i, sample * gainLevel * (float) envGain);
         }
 
         position += ratio;
-        envelope *= envelopeDecayPerSample;
-
-        if (envelope < 0.0002)
-        {
-            isActive = false;
-            break;
-        }
+        envElapsedSamples += 1.0;
     }
 }
 
@@ -83,13 +127,17 @@ bool SampleTrack::loadFile(const juce::File& file, juce::AudioFormatManager& for
     return true;
 }
 
-void SampleTrack::trigger(double outputSampleRate, float pitchSemitones, float velocityGain, float decayMs, int startDelaySamples)
+void SampleTrack::trigger(double outputSampleRate, float pitchSemitones, float velocityGain,
+                           float attackMs, float decayMs, float sustainLevel, float releaseMs,
+                           int startDelaySamples)
 {
     if (! loaded)
         return;
 
-    voices[nextVoice].start(&buffer, sourceSampleRate, outputSampleRate, pitchSemitones, velocityGain, decayMs, startDelaySamples);
+    voices[nextVoice].start(&buffer, sourceSampleRate, outputSampleRate, pitchSemitones, velocityGain,
+                             attackMs, decayMs, sustainLevel, releaseMs, startDelaySamples);
     nextVoice = (nextVoice + 1) % kMaxVoicesPerTrack;
+    triggerCount.fetch_add(1, std::memory_order_relaxed);
 }
 
 void SampleTrack::renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples)

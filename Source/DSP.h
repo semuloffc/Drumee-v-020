@@ -17,21 +17,33 @@ struct StepData
 class SamplePlayerVoice
 {
 public:
+    // attackMs/decayMs/sustainLevel(0..1)/releaseMs shape a one-shot ADSR
+    // amplitude envelope. There is no note-off in this drum sampler, so
+    // Release is scheduled to land at the end of the sample's own playback
+    // length (or right after Decay if the sample is too short for that).
     void start(const juce::AudioBuffer<float>* buffer, double sourceSampleRate,
-                double outputSampleRate, float pitchSemitones, float gain, float decayMs,
+                double outputSampleRate, float pitchSemitones, float gain,
+                float attackMs, float decayMs, float sustainLevel, float releaseMs,
                 int startDelaySamples);
     void renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples);
     bool active() const { return isActive; }
 
 private:
+    double envelopeGainAt(double elapsedSamples) const;
+
     const juce::AudioBuffer<float>* sourceBuffer = nullptr;
     bool isActive = false;
     double position = 0.0;
     double ratio = 1.0;
     float gainLevel = 1.0f;
-    double envelope = 1.0f;
-    double envelopeDecayPerSample = 0.0;
     int delaySamples = 0;
+
+    double envAttackSamples = 0.0;
+    double envDecaySamples = 0.0;
+    double envReleaseSamples = 0.0;
+    double envSustainLevel = 0.0;
+    double envReleaseStartSample = 0.0;
+    double envElapsedSamples = 0.0;
 };
 
 class SampleTrack
@@ -43,8 +55,15 @@ public:
     double sourceSampleRate = 44100.0;
     bool loaded = false;
 
+    // Bumped on every trigger() call (audio thread) so the GUI's envelope
+    // visualizer can detect hits and animate without any locking - the GUI
+    // timer just polls this and compares against the value it last saw.
+    std::atomic<int> triggerCount { 0 };
+
     bool loadFile(const juce::File& file, juce::AudioFormatManager& formatManager);
-    void trigger(double outputSampleRate, float pitchSemitones, float velocityGain, float decayMs, int startDelaySamples);
+    void trigger(double outputSampleRate, float pitchSemitones, float velocityGain,
+                 float attackMs, float decayMs, float sustainLevel, float releaseMs,
+                 int startDelaySamples);
     void renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples);
 
 private:

@@ -448,6 +448,382 @@ void SampleSlotComponent::mouseUp(const juce::MouseEvent& event)
 }
 
 // ---------------------------------------------------------------------------
+// EnvelopeVisualizer
+// ---------------------------------------------------------------------------
+namespace
+{
+    // Fixed visual widths for the four envelope zones (fractions of the
+    // graph's usable width). Sustain has no time parameter of its own, so
+    // its zone is just a fixed-width plateau that reads as "held" - it
+    // does not scale with anything.
+    constexpr float kAttackZoneFrac  = 0.20f;
+    constexpr float kDecayZoneFrac   = 0.25f;
+    constexpr float kSustainZoneFrac = 0.25f;
+    // Release gets the remainder (~0.30f).
+
+    // How long the animated playback marker lingers on the sustain
+    // plateau before sweeping into Release - a fixed value since one-shot
+    // triggers have no explicit hold length to draw from.
+    constexpr double kSustainHoldMs = 220.0;
+
+    constexpr float kPointHitRadius = 10.0f;
+}
+
+EnvelopeVisualizer::EnvelopeVisualizer(juce::AudioProcessorValueTreeState& state, int trackIndex, SampleTrack& trackToUse)
+    : track(trackToUse), accentColour(DrumeeColours::forTrack(trackIndex))
+{
+    attackParam  = state.getParameter(perTrackParamID(EnvelopeParamIDs::attack, trackIndex));
+    decayParam   = state.getParameter(perTrackParamID(PitchSoundParamIDs::decay, trackIndex));
+    sustainParam = state.getParameter(perTrackParamID(EnvelopeParamIDs::sustain, trackIndex));
+    releaseParam = state.getParameter(perTrackParamID(EnvelopeParamIDs::release, trackIndex));
+
+    attackRaw  = state.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::attack, trackIndex));
+    decayRaw   = state.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::decay, trackIndex));
+    sustainRaw = state.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::sustain, trackIndex));
+    releaseRaw = state.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::release, trackIndex));
+
+    setInterceptsMouseClicks(true, false);
+    setTooltip("Drag the points to shape Attack / Decay & Sustain / Release");
+    startTimerHz(30);
+}
+
+EnvelopeVisualizer::~EnvelopeVisualizer() { stopTimer(); }
+
+EnvelopeVisualizer::Geometry EnvelopeVisualizer::buildGeometry() const
+{
+    Geometry geo;
+    geo.area = getLocalBounds().toFloat().reduced(16.0f, 14.0f);
+
+    float w = geo.area.getWidth();
+    auto zones = geo.area;
+    geo.zoneAttack  = zones.removeFromLeft(w * kAttackZoneFrac);
+    geo.zoneDecay   = zones.removeFromLeft(w * kDecayZoneFrac);
+    geo.zoneSustain = zones.removeFromLeft(w * kSustainZoneFrac);
+    geo.zoneRelease = zones;
+
+    float attackMs  = juce::jlimit(0.0f, EnvelopeRanges::attackMaxMs, getAttack());
+    float decayMs   = juce::jlimit(0.0f, EnvelopeRanges::decayMaxMs, getDecay());
+    float sustainLv = juce::jlimit(0.0f, 1.0f, getSustain01());
+    float releaseMs = juce::jlimit(0.0f, EnvelopeRanges::releaseMaxMs, getRelease());
+
+    float sustainY = juce::jmap(sustainLv, 0.0f, 1.0f, geo.area.getBottom(), geo.area.getY());
+
+    geo.p0 = { geo.area.getX(), geo.area.getBottom() };
+    geo.p1 = { geo.zoneAttack.getX() + (attackMs / EnvelopeRanges::attackMaxMs) * geo.zoneAttack.getWidth(),
+               geo.area.getY() };
+    geo.p2 = { geo.zoneDecay.getX() + (decayMs / EnvelopeRanges::decayMaxMs) * geo.zoneDecay.getWidth(),
+               sustainY };
+    geo.p3 = { geo.zoneSustain.getRight(), sustainY };
+    geo.p4 = { geo.zoneRelease.getX() + (releaseMs / EnvelopeRanges::releaseMaxMs) * geo.zoneRelease.getWidth(),
+               geo.area.getBottom() };
+
+    return geo;
+}
+
+EnvelopeVisualizer::DragTarget EnvelopeVisualizer::hitTest(juce::Point<float> position, const Geometry& geo) const
+{
+    struct Candidate { DragTarget target; juce::Point<float> point; };
+    const Candidate candidates[] = {
+        { DragTarget::attackPoint,  geo.p1 },
+        { DragTarget::decayPoint,   geo.p2 },
+        { DragTarget::releasePoint, geo.p4 }
+    };
+
+    DragTarget best = DragTarget::none;
+    float bestDistance = kPointHitRadius;
+
+    for (auto& c : candidates)
+    {
+        float distance = position.getDistanceFrom(c.point);
+        if (distance <= bestDistance)
+        {
+            bestDistance = distance;
+            best = c.target;
+        }
+    }
+    return best;
+}
+
+void EnvelopeVisualizer::setNormalisedValue(juce::RangedAudioParameter* param, float realValue) const
+{
+    if (param != nullptr)
+        param->setValueNotifyingHost(param->convertTo0to1(realValue));
+}
+
+void EnvelopeVisualizer::mouseDown(const juce::MouseEvent& event)
+{
+    auto geo = buildGeometry();
+    dragging = hitTest(event.position, geo);
+
+    if (dragging == DragTarget::attackPoint && attackParam != nullptr)
+        attackParam->beginChangeGesture();
+    else if (dragging == DragTarget::decayPoint)
+    {
+        if (decayParam != nullptr) decayParam->beginChangeGesture();
+        if (sustainParam != nullptr) sustainParam->beginChangeGesture();
+    }
+    else if (dragging == DragTarget::releasePoint && releaseParam != nullptr)
+        releaseParam->beginChangeGesture();
+
+    if (dragging != DragTarget::none)
+        repaint();
+}
+
+void EnvelopeVisualizer::mouseDrag(const juce::MouseEvent& event)
+{
+    if (dragging == DragTarget::none)
+        return;
+
+    auto geo = buildGeometry();
+
+    auto mapXToMs = [] (float x, juce::Rectangle<float> zone, float maxMs)
+    {
+        float frac = zone.getWidth() > 0.0f ? (x - zone.getX()) / zone.getWidth() : 0.0f;
+        return juce::jlimit(0.0f, maxMs, frac * maxMs);
+    };
+
+    switch (dragging)
+    {
+        case DragTarget::attackPoint:
+            setNormalisedValue(attackParam, mapXToMs(event.position.x, geo.zoneAttack, EnvelopeRanges::attackMaxMs));
+            break;
+
+        case DragTarget::decayPoint:
+        {
+            float newDecay = mapXToMs(event.position.x, geo.zoneDecay, EnvelopeRanges::decayMaxMs);
+            float levelFrac = geo.area.getHeight() > 0.0f
+                ? (geo.area.getBottom() - event.position.y) / geo.area.getHeight() : 0.0f;
+            float newSustain = juce::jlimit(0.0f, 100.0f, levelFrac * 100.0f);
+            setNormalisedValue(decayParam, newDecay);
+            setNormalisedValue(sustainParam, newSustain);
+            break;
+        }
+
+        case DragTarget::releasePoint:
+            setNormalisedValue(releaseParam, mapXToMs(event.position.x, geo.zoneRelease, EnvelopeRanges::releaseMaxMs));
+            break;
+
+        case DragTarget::none:
+        default:
+            break;
+    }
+
+    repaint();
+}
+
+void EnvelopeVisualizer::mouseUp(const juce::MouseEvent&)
+{
+    if (dragging == DragTarget::attackPoint && attackParam != nullptr)
+        attackParam->endChangeGesture();
+    else if (dragging == DragTarget::decayPoint)
+    {
+        if (decayParam != nullptr) decayParam->endChangeGesture();
+        if (sustainParam != nullptr) sustainParam->endChangeGesture();
+    }
+    else if (dragging == DragTarget::releasePoint && releaseParam != nullptr)
+        releaseParam->endChangeGesture();
+
+    dragging = DragTarget::none;
+    repaint();
+}
+
+void EnvelopeVisualizer::mouseMove(const juce::MouseEvent& event)
+{
+    auto geo = buildGeometry();
+    auto newHover = hitTest(event.position, geo);
+    if (newHover != hovered)
+    {
+        hovered = newHover;
+        setMouseCursor(hovered == DragTarget::none ? juce::MouseCursor::NormalCursor
+                                                    : juce::MouseCursor::PointingHandCursor);
+        repaint();
+    }
+}
+
+void EnvelopeVisualizer::mouseExit(const juce::MouseEvent&)
+{
+    if (hovered != DragTarget::none)
+    {
+        hovered = DragTarget::none;
+        repaint();
+    }
+}
+
+juce::Point<float> EnvelopeVisualizer::pointAtElapsed(const Geometry& geo, double elapsedMs) const
+{
+    double attackMs  = juce::jmax(0.0, (double) getAttack());
+    double decayMs   = juce::jmax(0.0, (double) getDecay());
+    double releaseMs = juce::jmax(0.0, (double) getRelease());
+    double t = juce::jmax(0.0, elapsedMs);
+
+    if (t <= attackMs)
+    {
+        double frac = attackMs > 0.0 ? t / attackMs : 1.0;
+        float x = geo.zoneAttack.getX() + (float) (t / (double) EnvelopeRanges::attackMaxMs) * geo.zoneAttack.getWidth();
+        float y = juce::jmap((float) frac, 0.0f, 1.0f, geo.area.getBottom(), geo.area.getY());
+        return { x, y };
+    }
+    t -= attackMs;
+
+    if (t <= decayMs)
+    {
+        double frac = decayMs > 0.0 ? t / decayMs : 1.0;
+        float eased = (float) (frac * frac * (3.0 - 2.0 * frac));
+        float x = geo.zoneDecay.getX() + (float) (t / (double) EnvelopeRanges::decayMaxMs) * geo.zoneDecay.getWidth();
+        float y = juce::jmap(eased, 0.0f, 1.0f, geo.area.getY(), geo.p2.y);
+        return { x, y };
+    }
+    t -= decayMs;
+
+    if (t <= kSustainHoldMs)
+    {
+        double frac = kSustainHoldMs > 0.0 ? t / kSustainHoldMs : 1.0;
+        float x = juce::jmap((float) frac, 0.0f, 1.0f, geo.p2.x, geo.p3.x);
+        return { x, geo.p2.y };
+    }
+    t -= kSustainHoldMs;
+
+    double frac = juce::jlimit(0.0, 1.0, releaseMs > 0.0 ? t / releaseMs : 1.0);
+    float eased = (float) (frac * frac * (3.0 - 2.0 * frac));
+    float x = geo.zoneRelease.getX()
+             + (float) juce::jlimit(0.0, 1.0, t / (double) EnvelopeRanges::releaseMaxMs) * geo.zoneRelease.getWidth();
+    float y = juce::jmap(eased, 0.0f, 1.0f, geo.p2.y, geo.area.getBottom());
+    return { x, y };
+}
+
+void EnvelopeVisualizer::timerCallback()
+{
+    int count = track.triggerCount.load(std::memory_order_relaxed);
+    if (count != lastSeenTriggerCount)
+    {
+        lastSeenTriggerCount = count;
+        animating = true;
+        animationStartMs = juce::Time::getMillisecondCounterHiRes();
+    }
+
+    if (animating)
+    {
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - animationStartMs;
+        double totalMs = (double) getAttack() + (double) getDecay() + kSustainHoldMs + (double) getRelease();
+        if (elapsed >= totalMs)
+            animating = false;
+        repaint();
+    }
+}
+
+void EnvelopeVisualizer::drawPoint(juce::Graphics& g, juce::Point<float> p, bool active) const
+{
+    float r = active ? 5.5f : 4.0f;
+    auto dot = juce::Rectangle<float>(r * 2.0f, r * 2.0f).withCentre(p);
+
+    g.setColour(DrumeeColours::panelAlt);
+    g.fillEllipse(dot);
+    g.setColour(accentColour);
+    g.drawEllipse(dot, active ? 2.2f : 1.5f);
+
+    if (active)
+    {
+        g.setColour(accentColour);
+        g.fillEllipse(juce::Rectangle<float>(3.0f, 3.0f).withCentre(p));
+    }
+}
+
+void EnvelopeVisualizer::drawValueChip(juce::Graphics& g, const Geometry& geo) const
+{
+    DragTarget target = dragging != DragTarget::none ? dragging : hovered;
+    if (target == DragTarget::none)
+        return;
+
+    juce::String text;
+    juce::Point<float> anchor;
+
+    if (target == DragTarget::attackPoint)
+    {
+        text = "Attack " + juce::String(getAttack(), 0) + " ms";
+        anchor = geo.p1;
+    }
+    else if (target == DragTarget::decayPoint)
+    {
+        text = "Decay " + juce::String(getDecay(), 0) + " ms  \xc2\xb7  Sustain " + juce::String(getSustain01() * 100.0f, 0) + "%";
+        anchor = geo.p2;
+    }
+    else
+    {
+        text = "Release " + juce::String(getRelease(), 0) + " ms";
+        anchor = geo.p4;
+    }
+
+    juce::Font font(11.5f, juce::Font::bold);
+    g.setFont(font);
+    float textWidth = font.getStringWidthFloat(text) + 14.0f;
+    float textHeight = 19.0f;
+
+    float x = juce::jlimit(geo.area.getX(), juce::jmax(geo.area.getX(), geo.area.getRight() - textWidth),
+                            anchor.x - textWidth * 0.5f);
+    float y = anchor.y - textHeight - 9.0f;
+    if (y < geo.area.getY())
+        y = juce::jmin(anchor.y + 9.0f, geo.area.getBottom() - textHeight);
+
+    juce::Rectangle<float> chip(x, y, textWidth, textHeight);
+    g.setColour(DrumeeColours::panel);
+    g.fillRoundedRectangle(chip, 4.0f);
+    g.setColour(accentColour);
+    g.drawRoundedRectangle(chip.reduced(0.5f), 4.0f, 1.0f);
+    g.setColour(DrumeeColours::textPrimary);
+    g.drawText(text, chip, juce::Justification::centred);
+}
+
+void EnvelopeVisualizer::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(DrumeeColours::panelAlt);
+    g.fillRoundedRectangle(bounds, 6.0f);
+    g.setColour(DrumeeColours::outline);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 6.0f, 1.0f);
+
+    auto geo = buildGeometry();
+
+    float midY = (geo.area.getY() + geo.area.getBottom()) * 0.5f;
+    g.setColour(DrumeeColours::outline.withAlpha(0.6f));
+    g.drawLine(geo.area.getX(), midY, geo.area.getRight(), midY, 1.0f);
+    g.drawLine(geo.area.getX(), geo.area.getBottom(), geo.area.getRight(), geo.area.getBottom(), 1.0f);
+
+    juce::Path shape;
+    shape.startNewSubPath(geo.p0);
+    shape.lineTo(geo.p1);
+    shape.quadraticTo({ (geo.p1.x + geo.p2.x) * 0.5f, geo.p1.y }, geo.p2);
+    shape.lineTo(geo.p3);
+    shape.quadraticTo({ (geo.p3.x + geo.p4.x) * 0.5f, geo.p3.y }, geo.p4);
+
+    juce::Path fill = shape;
+    fill.lineTo(geo.p4.x, geo.area.getBottom());
+    fill.lineTo(geo.p0.x, geo.area.getBottom());
+    fill.closeSubPath();
+
+    g.setColour(accentColour.withAlpha(0.16f));
+    g.fillPath(fill);
+
+    g.setColour(accentColour);
+    g.strokePath(shape, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    drawPoint(g, geo.p1, dragging == DragTarget::attackPoint || hovered == DragTarget::attackPoint);
+    drawPoint(g, geo.p2, dragging == DragTarget::decayPoint || hovered == DragTarget::decayPoint);
+    drawPoint(g, geo.p4, dragging == DragTarget::releasePoint || hovered == DragTarget::releasePoint);
+
+    if (animating)
+    {
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - animationStartMs;
+        auto marker = pointAtElapsed(geo, elapsed);
+        g.setColour(accentColour.withAlpha(0.45f));
+        g.drawLine(marker.x, geo.area.getBottom(), marker.x, geo.area.getY(), 1.0f);
+        g.setColour(DrumeeColours::textPrimary);
+        g.fillEllipse(juce::Rectangle<float>(5.0f, 5.0f).withCentre(marker));
+    }
+
+    drawValueChip(g, geo);
+}
+
+// ---------------------------------------------------------------------------
 // SampleEditorContent
 // ---------------------------------------------------------------------------
 SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorValueTreeState& state, SampleTrack& trackToUse)
@@ -476,7 +852,24 @@ SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorVal
         auto encoder = std::make_unique<Encoder>(state, info);
         encoder->setAccentColour(knobAccent);
         addAndMakeVisible(*encoder);
-        encoders.push_back(std::move(encoder));
+        pitchEncoders.push_back(std::move(encoder));
+    }
+
+    sectionEnvelope.setJustificationType(juce::Justification::centredLeft);
+    sectionEnvelope.setFont(juce::Font(12.0f, juce::Font::bold));
+    sectionEnvelope.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
+    addAndMakeVisible(sectionEnvelope);
+
+    envelopeVisualizer = std::make_unique<EnvelopeVisualizer>(state, trackIndex, trackToUse);
+    addAndMakeVisible(*envelopeVisualizer);
+
+    juce::Colour envelopeAccent = DrumeeColours::forTrack(trackIndex);
+    for (auto& info : getEnvelopeParamInfoForTrack(trackIndex))
+    {
+        auto encoder = std::make_unique<Encoder>(state, info);
+        encoder->setAccentColour(envelopeAccent);
+        addAndMakeVisible(*encoder);
+        envelopeEncoders.push_back(std::move(encoder));
     }
 }
 
@@ -491,46 +884,69 @@ void SampleEditorContent::resized()
     constexpr int margin = 20;
     auto bounds = getLocalBounds().reduced(margin);
 
-    sampleNameLabel.setBounds(bounds.removeFromTop(28));
-    bounds.removeFromTop(10);
+    sampleNameLabel.setBounds(bounds.removeFromTop(22));
+    bounds.removeFromTop(6);
 
-    slot->setBounds(bounds.removeFromTop(66));
-    bounds.removeFromTop(18);
+    // Top row: file slot (left) and the compact Pitch & Sound knobs (right)
+    // share one row now, freeing most of the page's height for the
+    // envelope section below - the main showcase of this update.
+    auto topRow = bounds.removeFromTop(70);
+    bounds.removeFromTop(12);
 
-    sectionPitch.setBounds(bounds.removeFromTop(20));
+    auto slotArea = topRow.removeFromLeft((int) (topRow.getWidth() * 0.56f));
+    slot->setBounds(slotArea);
+
+    topRow.removeFromLeft(16);
+    sectionPitch.setBounds(topRow.removeFromTop(16));
+    topRow.removeFromTop(4);
+    pitchWellBounds = topRow;
+    auto pitchRow = topRow;
+    int pitchCellWidth = pitchEncoders.empty() ? pitchRow.getWidth() : pitchRow.getWidth() / (int) pitchEncoders.size();
+    for (size_t i = 0; i < pitchEncoders.size(); ++i)
+    {
+        juce::Rectangle<int> cell(pitchRow.getX() + (int) i * pitchCellWidth, pitchRow.getY(), pitchCellWidth, pitchRow.getHeight());
+        pitchEncoders[i]->setBounds(cell.reduced(10, 0));
+    }
+
+    sectionEnvelope.setBounds(bounds.removeFromTop(18));
     bounds.removeFromTop(8);
 
-    // Single row of Pitch & Sound encoders - now that the panel spans the
-    // full plugin width (no side knob columns next to it), there is room
-    // for all four knobs side by side instead of stacking them 2x2.
-    constexpr int encoderHeight = 130;
-    auto grid = bounds;
-    int topPad = juce::jmax(0, (grid.getHeight() - encoderHeight) / 2);
-    grid.removeFromTop(topPad);
-    grid.setHeight(juce::jmin(encoderHeight, grid.getHeight()));
+    // Envelope section: the interactive graph takes the left ~56% of the
+    // remaining width, its five knobs (Attack/Decay/Sustain/Release/Volume)
+    // fill the rest as a single row so nothing has to wrap or overlap.
+    auto graphArea = bounds.removeFromLeft((int) (bounds.getWidth() * 0.56f));
+    envelopeVisualizer->setBounds(graphArea.reduced(0, 2));
 
-    int cellWidth = encoders.empty() ? grid.getWidth() : grid.getWidth() / (int) encoders.size();
-    for (size_t i = 0; i < encoders.size(); ++i)
+    bounds.removeFromLeft(16);
+    envelopeKnobWellBounds = bounds;
+    auto knobArea = bounds;
+    int knobCellWidth = envelopeEncoders.empty() ? knobArea.getWidth() : knobArea.getWidth() / (int) envelopeEncoders.size();
+    int knobHeight = juce::jmin(130, knobArea.getHeight());
+    int knobTopPad = juce::jmax(0, (knobArea.getHeight() - knobHeight) / 2);
+    for (size_t i = 0; i < envelopeEncoders.size(); ++i)
     {
-        juce::Rectangle<int> cell(grid.getX() + (int) i * cellWidth, grid.getY(), cellWidth, grid.getHeight());
-        encoders[i]->setBounds(cell.reduced(24, 6));
+        juce::Rectangle<int> cell(knobArea.getX() + (int) i * knobCellWidth, knobArea.getY() + knobTopPad, knobCellWidth, knobHeight);
+        envelopeEncoders[i]->setBounds(cell.reduced(8, 0));
     }
 }
 
 void SampleEditorContent::paint(juce::Graphics& g)
 {
     // This page now lives nested inside SampleEditorPanel's own panel
-    // background (rather than filling a standalone window), so it stays
-    // transparent and only draws the recessed well behind its encoder grid,
-    // matching the "panelAlt" treatment used for other sunken fields.
-    constexpr int margin = 20;
-    auto bounds = getLocalBounds().reduced(margin);
-    bounds.removeFromTop(28 + 10 + 66 + 18 + 20 + 8);
+    // background (rather than filling a standalone window), so it only
+    // draws the recessed "well" behind each knob row - the envelope graph
+    // and sample slot already paint their own panelAlt background.
+    for (auto bounds : { pitchWellBounds, envelopeKnobWellBounds })
+    {
+        if (bounds.isEmpty())
+            continue;
 
-    g.setColour(DrumeeColours::panelAlt);
-    g.fillRoundedRectangle(bounds.toFloat(), 6.0f);
-    g.setColour(DrumeeColours::outline);
-    g.drawRoundedRectangle(bounds.toFloat().reduced(0.5f), 6.0f, 1.0f);
+        auto wellBounds = bounds.toFloat();
+        g.setColour(DrumeeColours::panelAlt);
+        g.fillRoundedRectangle(wellBounds, 6.0f);
+        g.setColour(DrumeeColours::outline);
+        g.drawRoundedRectangle(wellBounds.reduced(0.5f), 6.0f, 1.0f);
+    }
 }
 
 // ---------------------------------------------------------------------------

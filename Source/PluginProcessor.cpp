@@ -60,18 +60,25 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
     float ratchet = apvts.getRawParameterValue(ParamIDs::ratchet)->load();
     float probability = apvts.getRawParameterValue(ParamIDs::probability)->load();
 
-    // Pitch & Sound is now per-sample: each track has its own Pitch Rand,
-    // Decay, Velocity and Volume, set on that sample's page in the editor panel.
+    // Pitch & Sound is per-sample: each track has its own Pitch Rand and
+    // Velocity. Decay/Volume plus the new Attack/Sustain/Release make up
+    // that sample's ADSR envelope, set on that sample's page in the editor panel.
     std::array<float, kNumTracks> pitchRand {};
     std::array<float, kNumTracks> velocity {};
+    std::array<float, kNumTracks> attack {};
     std::array<float, kNumTracks> decay {};
+    std::array<float, kNumTracks> sustain {};
+    std::array<float, kNumTracks> release {};
     std::array<float, kNumTracks> volume {};
 
     for (int t = 0; t < kNumTracks; ++t)
     {
         pitchRand[(size_t) t] = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::pitchRand, t))->load();
-        decay[(size_t) t]     = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::decay, t))->load();
         velocity[(size_t) t]  = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::velocity, t))->load();
+        attack[(size_t) t]    = apvts.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::attack, t))->load();
+        decay[(size_t) t]     = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::decay, t))->load();
+        sustain[(size_t) t]   = apvts.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::sustain, t))->load() / 100.0f;
+        release[(size_t) t]   = apvts.getRawParameterValue(perTrackParamID(EnvelopeParamIDs::release, t))->load();
         volume[(size_t) t]    = apvts.getRawParameterValue(perTrackParamID(PitchSoundParamIDs::volume, t))->load();
     }
 
@@ -80,11 +87,14 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
 
     sequencer.process(buffer.getNumSamples(), hostBpm, hostIsPlaying,
                        nudge, swing, humanize, pitchRand, velocity, ratchet, probability,
-                       [&tracksRef, outputSampleRate, &decay, &volume](int track, int sampleOffset, float vel, float pitchOffset)
+                       [&tracksRef, outputSampleRate, &attack, &decay, &sustain, &release, &volume]
+                       (int track, int sampleOffset, float vel, float pitchOffset)
                        {
                            float trackGain = vel * volume[(size_t) track];
                            tracksRef[(size_t) track].trigger(outputSampleRate, pitchOffset, trackGain,
-                                                              decay[(size_t) track], sampleOffset);
+                                                              attack[(size_t) track], decay[(size_t) track],
+                                                              sustain[(size_t) track], release[(size_t) track],
+                                                              sampleOffset);
                        });
 
     for (auto& track : tracks)

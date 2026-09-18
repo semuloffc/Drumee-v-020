@@ -5,9 +5,10 @@
 
 // ---------------------------------------------------------------------------
 // Global parameters (shown on the main screen: TIMING & GROOVE, RATCHET &
-// CHAOS). PITCH & SOUND used to live here too, but as of 0.2.2 those four
+// CHAOS). PITCH & SOUND used to live here too, but as of 0.2.2 those
 // controls became per-sample and moved into the internal sample editor panel -
-// see PitchSoundParamIDs / getPitchSoundParamInfoForTrack below.
+// see PitchSoundParamIDs/EnvelopeParamIDs and getPitchSoundParamInfoForTrack/
+// getEnvelopeParamInfoForTrack below.
 // ---------------------------------------------------------------------------
 namespace ParamIDs
 {
@@ -20,8 +21,9 @@ namespace ParamIDs
 
 // ---------------------------------------------------------------------------
 // Per-sample parameters (shown only on that sample's page in the editor panel).
-// Every track gets its own independent Pitch Rand / Decay / Velocity /
-// Volume, addressed as base id + track index, e.g. "decay0" .. "decay4".
+// Every track gets its own independent Pitch Rand / Velocity plus its own
+// ADSR envelope (Attack / Decay / Sustain / Release / Volume), addressed as
+// base id + track index, e.g. "decay0" .. "decay4".
 // ---------------------------------------------------------------------------
 namespace PitchSoundParamIDs
 {
@@ -29,6 +31,28 @@ namespace PitchSoundParamIDs
     static const juce::String decay     = "decay";
     static const juce::String velocity  = "velocity";
     static const juce::String volume    = "volume";
+}
+
+// 0.2.5: per-sample amplitude envelope. Decay and Volume above are reused
+// as the ADSR's Decay stage and output level - only Attack/Sustain/Release
+// are new IDs - so existing "decayN"/"volumeN" automation keeps working.
+namespace EnvelopeParamIDs
+{
+    static const juce::String attack  = "attack";
+    static const juce::String sustain = "sustain";
+    static const juce::String release = "release";
+}
+
+// Shared with the interactive envelope graph in GUI.cpp so the knob ranges
+// and the on-screen point positions can never drift apart.
+namespace EnvelopeRanges
+{
+    static constexpr float attackMinMs  = 0.0f;
+    static constexpr float attackMaxMs  = 500.0f;
+    static constexpr float decayMinMs   = 1.0f;
+    static constexpr float decayMaxMs   = 2000.0f;
+    static constexpr float releaseMinMs = 1.0f;
+    static constexpr float releaseMaxMs = 2000.0f;
 }
 
 inline juce::String perTrackParamID(const juce::String& base, int trackIndex)
@@ -40,7 +64,8 @@ enum class AccentGroup
 {
     timing,
     pitchSound,
-    ratchetChaos
+    ratchetChaos,
+    envelope
 };
 
 struct ParamInfo
@@ -63,16 +88,29 @@ inline const std::array<ParamInfo, 5>& getAllParamInfo()
     return info;
 }
 
-// The four Pitch & Sound controls, expanded to their concrete per-track
+// The Pitch & Sound controls, expanded to their concrete per-track
 // parameter IDs for a given sample/track index. Used to build the encoders
-// on that sample's page in the editor panel.
-inline std::array<ParamInfo, 4> getPitchSoundParamInfoForTrack(int trackIndex)
+// on that sample's page in the editor panel. Decay and Volume moved out of
+// this group in 0.2.5 - they are now part of the ADSR envelope group below.
+inline std::array<ParamInfo, 2> getPitchSoundParamInfoForTrack(int trackIndex)
 {
     return { {
         { perTrackParamID(PitchSoundParamIDs::pitchRand, trackIndex), "Pitch Rand", AccentGroup::pitchSound },
-        { perTrackParamID(PitchSoundParamIDs::decay,     trackIndex), "Decay",      AccentGroup::pitchSound },
-        { perTrackParamID(PitchSoundParamIDs::velocity,  trackIndex), "Velocity",   AccentGroup::pitchSound },
-        { perTrackParamID(PitchSoundParamIDs::volume,    trackIndex), "Volume",     AccentGroup::pitchSound }
+        { perTrackParamID(PitchSoundParamIDs::velocity,  trackIndex), "Velocity",   AccentGroup::pitchSound }
+    } };
+}
+
+// The five ENVELOPE controls for a given sample/track index: the four ADSR
+// stages plus overall Volume, all shown next to that sample's interactive
+// envelope graph on its page in the editor panel.
+inline std::array<ParamInfo, 5> getEnvelopeParamInfoForTrack(int trackIndex)
+{
+    return { {
+        { perTrackParamID(EnvelopeParamIDs::attack,   trackIndex), "Attack",  AccentGroup::envelope },
+        { perTrackParamID(PitchSoundParamIDs::decay,  trackIndex), "Decay",   AccentGroup::envelope },
+        { perTrackParamID(EnvelopeParamIDs::sustain,  trackIndex), "Sustain", AccentGroup::envelope },
+        { perTrackParamID(EnvelopeParamIDs::release,  trackIndex), "Release", AccentGroup::envelope },
+        { perTrackParamID(PitchSoundParamIDs::volume, trackIndex), "Volume",  AccentGroup::envelope }
     } };
 }
 
@@ -100,7 +138,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         ParamIDs::probability, "Probability",
         juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 100.0f, "%"));
 
-    // Per-track Pitch & Sound parameters: 4 controls x kNumTracks samples.
+    // Per-track Pitch & Sound + Envelope parameters: 7 controls x kNumTracks samples.
     for (int t = 0; t < kNumTracks; ++t)
     {
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
@@ -109,7 +147,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             perTrackParamID(PitchSoundParamIDs::decay, t), "Decay " + juce::String(t + 1),
-            juce::NormalisableRange<float>(10.0f, 300.0f, 0.1f), 300.0f, "ms"));
+            juce::NormalisableRange<float>(EnvelopeRanges::decayMinMs, EnvelopeRanges::decayMaxMs, 0.1f), 300.0f, "ms"));
 
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             perTrackParamID(PitchSoundParamIDs::velocity, t), "Velocity " + juce::String(t + 1),
@@ -118,6 +156,21 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             perTrackParamID(PitchSoundParamIDs::volume, t), "Volume " + juce::String(t + 1),
             juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f), 0.8f, ""));
+
+        // 0.2.5: Attack/Sustain/Release complete the per-sample envelope.
+        // Defaults (attack 0, sustain 0) keep the pre-0.2.5 punchy one-shot
+        // decay-to-silence behaviour unless the user reshapes the envelope.
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            perTrackParamID(EnvelopeParamIDs::attack, t), "Attack " + juce::String(t + 1),
+            juce::NormalisableRange<float>(EnvelopeRanges::attackMinMs, EnvelopeRanges::attackMaxMs, 0.1f), 0.0f, "ms"));
+
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            perTrackParamID(EnvelopeParamIDs::sustain, t), "Sustain " + juce::String(t + 1),
+            juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f, "%"));
+
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            perTrackParamID(EnvelopeParamIDs::release, t), "Release " + juce::String(t + 1),
+            juce::NormalisableRange<float>(EnvelopeRanges::releaseMinMs, EnvelopeRanges::releaseMaxMs, 0.1f), 40.0f, "ms"));
     }
 
     return { params.begin(), params.end() };

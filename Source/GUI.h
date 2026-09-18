@@ -31,6 +31,10 @@ namespace DrumeeColours
             case AccentGroup::timing:       return accent1;
             case AccentGroup::pitchSound:   return accent3;
             case AccentGroup::ratchetChaos: return accent2;
+            // Envelope encoders are recoloured per-track right after
+            // construction (see forTrack()) so each sample's envelope
+            // reads in its own colour - this is just the switch's fallback.
+            case AccentGroup::envelope:     return accent3;
         }
         return accent1;
     }
@@ -121,9 +125,7 @@ private:
     int lastPaintedStep = -1;
 };
 
-class SampleSlotComponent : public juce::Component,
-                             public juce::FileDragAndDropTarget,
-                             public juce::SettableTooltipClient
+class SampleSlotComponent : public juce::Component, public juce::FileDragAndDropTarget
 {
 public:
     // compact = the small card used in the main window's bottom row.
@@ -167,8 +169,75 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Sample editor page: one sample's file slot plus its own unique PITCH &
-// SOUND controls (Pitch Rand, Decay, Velocity, Volume). As of 0.2.3 this no
+// Interactive ADSR envelope graph for one sample's page in the editor panel.
+// Draws the Attack/Decay/Sustain/Release shape in that sample's own track
+// colour, lets the person drag its three breakpoints directly (Serum-style)
+// to reshape the envelope, and animates a small marker sweeping along the
+// curve whenever the sequencer actually triggers that sample.
+// ---------------------------------------------------------------------------
+class EnvelopeVisualizer : public juce::Component, private juce::Timer
+{
+public:
+    EnvelopeVisualizer(juce::AudioProcessorValueTreeState& state, int trackIndex, SampleTrack& trackToUse);
+    ~EnvelopeVisualizer() override;
+
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void mouseMove(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
+
+private:
+    enum class DragTarget { none, attackPoint, decayPoint, releasePoint };
+
+    // Zone rectangles depend only on the component's bounds; the points
+    // (p1..p4) depend on the current parameter values too, so they are
+    // rebuilt together every time geometry is needed (paint, hit-testing).
+    struct Geometry
+    {
+        juce::Rectangle<float> area, zoneAttack, zoneDecay, zoneSustain, zoneRelease;
+        juce::Point<float> p0, p1, p2, p3, p4;
+    };
+
+    void timerCallback() override;
+    Geometry buildGeometry() const;
+    DragTarget hitTest(juce::Point<float> position, const Geometry&) const;
+    juce::Point<float> pointAtElapsed(const Geometry&, double elapsedMs) const;
+    void drawPoint(juce::Graphics&, juce::Point<float>, bool active) const;
+    void drawValueChip(juce::Graphics&, const Geometry&) const;
+    void setNormalisedValue(juce::RangedAudioParameter* param, float realValue) const;
+
+    float getAttack() const  { return attackRaw != nullptr ? attackRaw->load() : 0.0f; }
+    float getDecay() const   { return decayRaw != nullptr ? decayRaw->load() : 0.0f; }
+    float getSustain01() const { return sustainRaw != nullptr ? sustainRaw->load() / 100.0f : 0.0f; }
+    float getRelease() const { return releaseRaw != nullptr ? releaseRaw->load() : 0.0f; }
+
+    SampleTrack& track;
+    juce::Colour accentColour;
+
+    juce::RangedAudioParameter* attackParam = nullptr;
+    juce::RangedAudioParameter* decayParam = nullptr;
+    juce::RangedAudioParameter* sustainParam = nullptr;
+    juce::RangedAudioParameter* releaseParam = nullptr;
+
+    std::atomic<float>* attackRaw = nullptr;
+    std::atomic<float>* decayRaw = nullptr;
+    std::atomic<float>* sustainRaw = nullptr;
+    std::atomic<float>* releaseRaw = nullptr;
+
+    DragTarget dragging = DragTarget::none;
+    DragTarget hovered = DragTarget::none;
+
+    int lastSeenTriggerCount = 0;
+    double animationStartMs = 0.0;
+    bool animating = false;
+};
+
+// ---------------------------------------------------------------------------
+// Sample editor page: one sample's file slot, its PITCH & SOUND controls
+// (Pitch Rand, Velocity) and its ADSR ENVELOPE (Attack/Decay/Sustain/
+// Release/Volume) with the interactive graph above. As of 0.2.3 this no
 // longer lives in its own OS-level window - it is one page inside
 // SampleEditorPanel, an internal view swapped in full-width over the step
 // sequencer and side knob columns.
@@ -188,8 +257,17 @@ public:
 private:
     juce::Label sampleNameLabel;
     juce::Label sectionPitch { {}, "PITCH & SOUND" };
+    juce::Label sectionEnvelope { {}, "ENVELOPE" };
     std::unique_ptr<SampleSlotComponent> slot;
-    std::vector<std::unique_ptr<Encoder>> encoders;
+    std::vector<std::unique_ptr<Encoder>> pitchEncoders;
+    std::vector<std::unique_ptr<Encoder>> envelopeEncoders;
+    std::unique_ptr<EnvelopeVisualizer> envelopeVisualizer;
+
+    // Recessed "well" backgrounds behind the two knob rows, matching the
+    // panelAlt treatment used elsewhere - captured in resized() so paint()
+    // can draw them without recomputing the whole layout.
+    juce::Rectangle<int> pitchWellBounds;
+    juce::Rectangle<int> envelopeKnobWellBounds;
 };
 
 // ---------------------------------------------------------------------------
