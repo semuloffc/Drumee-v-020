@@ -19,6 +19,8 @@ void DrumeeAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     sequencer.prepare(sampleRate);
     scratchBuffer.setSize(2, samplesPerBlock);
+    masterBus.prepare(sampleRate);
+    trackMuteGainState.fill(1.0f);
 }
 
 void DrumeeAudioProcessor::releaseResources() {}
@@ -106,8 +108,43 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
                                                               sampleOffset);
                        });
 
-    for (auto& track : tracks)
-        track.renderNextBlock(buffer, 0, buffer.getNumSamples());
+    // Mute/Solo: each track renders into the scratch buffer first, then
+    // gets summed into the main output through a per-block gain ramp - a
+    // flipped Mute/Solo fades in/out over the block instead of clicking.
+    // Solo, if any track has it engaged, overrides Mute everywhere.
+    bool anySolo = false;
+    std::array<bool, kNumTracks> muteState {};
+    std::array<bool, kNumTracks> soloState {};
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        muteState[(size_t) t] = apvts.getRawParameterValue(perTrackParamID(MuteSoloParamIDs::mute, t))->load() > 0.5f;
+        soloState[(size_t) t] = apvts.getRawParameterValue(perTrackParamID(MuteSoloParamIDs::solo, t))->load() > 0.5f;
+        anySolo = anySolo || soloState[(size_t) t];
+    }
+
+    scratchBuffer.setSize(buffer.getNumChannels(), buffer.getNumSamples(), false, false, true);
+
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        scratchBuffer.clear();
+        tracks[(size_t) t].renderNextBlock(scratchBuffer, 0, buffer.getNumSamples());
+
+        bool audible = anySolo ? soloState[(size_t) t] : ! muteState[(size_t) t];
+        float startGain = trackMuteGainState[(size_t) t];
+        float targetGain = audible ? 1.0f : 0.0f;
+
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            scratchBuffer.applyGainRamp(ch, 0, buffer.getNumSamples(), startGain, targetGain);
+            buffer.addFrom(ch, 0, scratchBuffer, ch, 0, buffer.getNumSamples());
+        }
+
+        trackMuteGainState[(size_t) t] = targetGain;
+    }
+
+    float masterVolumeDb = apvts.getRawParameterValue(MasterParamIDs::volume)->load();
+    float masterLimiterCeilingDb = apvts.getRawParameterValue(MasterParamIDs::limiter)->load();
+    masterBus.process(buffer, juce::Decibels::decibelsToGain(masterVolumeDb), masterLimiterCeilingDb);
 }
 
 juce::AudioProcessorEditor* DrumeeAudioProcessor::createEditor()

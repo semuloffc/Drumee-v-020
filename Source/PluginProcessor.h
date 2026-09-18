@@ -39,6 +39,7 @@ public:
     Sequencer sequencer;
     std::array<SampleTrack, kNumTracks> tracks;
     PresetManager presetManager;
+    MasterBus masterBus;
 
     bool loadSampleForTrack(int trackIndex, const juce::File& file);
 
@@ -47,6 +48,10 @@ public:
 
 private:
     juce::AudioBuffer<float> scratchBuffer;
+
+    // Ramped per-block, not stepped, so flipping Mute/Solo mid-playback
+    // fades rather than clicks (see processBlock()).
+    std::array<float, kNumTracks> trackMuteGainState { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DrumeeAudioProcessor)
 };

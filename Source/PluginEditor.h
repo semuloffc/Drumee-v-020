@@ -34,6 +34,7 @@ private:
     juce::Label sectionTiming { {}, "TIMING & GROOVE" };
     juce::Label sectionChaos { {}, "RATCHET & CHAOS" };
     juce::Label sectionSamples { {}, "SAMPLES" };
+    juce::Label sectionMaster { {}, "MASTER" };
 
     // Card panels drawn behind the Timing/Chaos knob groups, giving those
     // columns the same panel treatment as the step grid and sample cards
@@ -42,6 +43,7 @@ private:
     juce::Rectangle<int> chaosCardBounds;
 
     std::vector<std::unique_ptr<Encoder>> encoders;
+    std::vector<std::unique_ptr<Encoder>> masterEncoders;
     std::unique_ptr<StepSequencerVisualizer> visualizer;
     std::vector<std::unique_ptr<SampleSlotComponent>> sampleSlots;
 

@@ -126,3 +126,20 @@ private:
                   float ratchetAmount, float probabilityPct,
                   int blockSize, const TriggerCallback& callback);
 };
+
+// 0.2.8: post-mix master bus, run once after every track has been rendered
+// and summed into the main output buffer. Applies overall output Volume,
+// then a simple feed-forward peak limiter (fast attack, slower release, no
+// lookahead) that keeps the mix from exceeding the Limiter ceiling.
+class MasterBus
+{
+public:
+    void prepare(double sampleRate);
+    void reset();
+    void process(juce::AudioBuffer<float>& buffer, float volumeGain, float limiterCeilingDb);
+
+private:
+    double sampleRate = 44100.0;
+    float previousVolumeGain = 1.0f;
+    float limiterEnvelope = 1.0f;
+};

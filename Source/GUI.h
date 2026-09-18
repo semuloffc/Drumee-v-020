@@ -35,6 +35,10 @@ namespace DrumeeColours
             // construction (see forTrack()) so each sample's envelope
             // reads in its own colour - this is just the switch's fallback.
             case AccentGroup::envelope:     return accent3;
+            // Master Volume/Limiter are a utility pair, not tied to any one
+            // track or knob group - kept on the existing neutral grey
+            // rather than introducing a fourth accent hue.
+            case AccentGroup::master:       return secondary;
         }
         return accent1;
     }
@@ -131,7 +135,10 @@ public:
     // compact = the small card used in the main window's bottom row.
     // The larger (non-compact) layout is used inside the sample editor
     // panel, where there is room to show the file status on its own line.
-    SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact = true);
+    // muteSoloState: when non-null (main-screen compact cards only), adds
+    // the small M/S toggle buttons wired to that track's Mute/Solo params.
+    SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact = true,
+                         juce::AudioProcessorValueTreeState* muteSoloState = nullptr);
 
     void resized() override;
     void paint(juce::Graphics&) override;
@@ -166,6 +173,12 @@ private:
     bool isDragHover = false;
     bool isMouseOver = false;
     bool isSelected = false;
+
+    bool hasMuteSolo = false;
+    juce::TextButton muteButton { "M" };
+    juce::TextButton soloButton { "S" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> muteAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> soloAttachment;
 };
 
 // ---------------------------------------------------------------------------

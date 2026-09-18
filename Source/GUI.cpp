@@ -294,7 +294,8 @@ void StepSequencerVisualizer::timerCallback()
     }
 }
 
-SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact)
+SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse, bool compact,
+                                          juce::AudioProcessorValueTreeState* muteSoloState)
     : index(trackIndex), track(trackToUse), isCompact(compact)
 {
     setInterceptsMouseClicks(true, false);
@@ -315,6 +316,32 @@ SampleSlotComponent::SampleSlotComponent(int trackIndex, SampleTrack& trackToUse
     setTooltip(isCompact ? "Click to edit this sample \xc2\xb7 drop an audio file to load"
                           : "Click or drop an audio file to load");
 
+    // Mute/Solo only ever appear on the compact main-screen card - the
+    // caller is the only place with a state to attach to.
+    hasMuteSolo = compact && muteSoloState != nullptr;
+    if (hasMuteSolo)
+    {
+        for (auto* button : { &muteButton, &soloButton })
+        {
+            button->setClickingTogglesState(true);
+            button->setColour(juce::TextButton::buttonColourId, DrumeeColours::panelAlt);
+            button->setColour(juce::TextButton::textColourOffId, DrumeeColours::textSecondary);
+            button->setColour(juce::TextButton::textColourOnId, DrumeeColours::textInverse);
+            addAndMakeVisible(*button);
+        }
+
+        muteButton.setColour(juce::TextButton::buttonOnColourId, DrumeeColours::accent2);
+        muteButton.setTooltip("Mute this track");
+
+        soloButton.setColour(juce::TextButton::buttonOnColourId, DrumeeColours::accent3);
+        soloButton.setTooltip("Solo this track");
+
+        muteAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+            *muteSoloState, perTrackParamID(MuteSoloParamIDs::mute, trackIndex), muteButton);
+        soloAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+            *muteSoloState, perTrackParamID(MuteSoloParamIDs::solo, trackIndex), soloButton);
+    }
+
     refresh();
 }
 
@@ -324,7 +351,20 @@ void SampleSlotComponent::resized()
     // status/filename below it - the whole card is the click target.
     auto bounds = getLocalBounds().reduced(10, 8);
     bounds.removeFromLeft(6);
-    nameLabel.setBounds(bounds.removeFromTop(bounds.getHeight() / 2));
+
+    auto topRow = bounds.removeFromTop(bounds.getHeight() / 2);
+
+    if (hasMuteSolo)
+    {
+        constexpr int btnSize = 20;
+        constexpr int btnGap = 4;
+        soloButton.setBounds(topRow.removeFromRight(btnSize).withSizeKeepingCentre(btnSize, btnSize));
+        topRow.removeFromRight(btnGap);
+        muteButton.setBounds(topRow.removeFromRight(btnSize).withSizeKeepingCentre(btnSize, btnSize));
+        topRow.removeFromRight(btnGap);
+    }
+
+    nameLabel.setBounds(topRow);
     statusLabel.setBounds(bounds);
 }
 

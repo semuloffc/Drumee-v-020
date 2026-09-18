@@ -282,3 +282,53 @@ void Sequencer::fireStep(int step, int offsetInBlock, double samplesPerStep,
         }
     }
 }
+
+void MasterBus::prepare(double newSampleRate)
+{
+    sampleRate = newSampleRate;
+    reset();
+}
+
+void MasterBus::reset()
+{
+    previousVolumeGain = 1.0f;
+    limiterEnvelope = 1.0f;
+}
+
+// Volume is applied first (ramped across the block to avoid zipper noise
+// when the knob moves), then the limiter looks at the true post-volume
+// peak on every sample and reins it in if it exceeds the ceiling - fast
+// enough attack to catch one-shot transients, slow enough release to
+// avoid audible pumping between hits.
+void MasterBus::process(juce::AudioBuffer<float>& buffer, float volumeGain, float limiterCeilingDb)
+{
+    const int numSamples = buffer.getNumSamples();
+    const int numChannels = buffer.getNumChannels();
+    if (numSamples <= 0 || numChannels <= 0)
+        return;
+
+    for (int ch = 0; ch < numChannels; ++ch)
+        buffer.applyGainRamp(ch, 0, numSamples, previousVolumeGain, volumeGain);
+    previousVolumeGain = volumeGain;
+
+    const float ceilingLin = juce::Decibels::decibelsToGain(limiterCeilingDb);
+    const float attackCoeff  = (float) std::exp(-1.0 / (0.001 * sampleRate));
+    const float releaseCoeff = (float) std::exp(-1.0 / (0.100 * sampleRate));
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float peak = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+            peak = juce::jmax(peak, std::abs(buffer.getSample(ch, i)));
+
+        float targetGain = (peak > ceilingLin && peak > 0.0f) ? (ceilingLin / peak) : 1.0f;
+
+        limiterEnvelope = targetGain < limiterEnvelope
+            ? targetGain + (limiterEnvelope - targetGain) * attackCoeff
+            : targetGain + (limiterEnvelope - targetGain) * releaseCoeff;
+        limiterEnvelope = juce::jlimit(0.0f, 1.0f, limiterEnvelope);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.setSample(ch, i, buffer.getSample(ch, i) * limiterEnvelope);
+    }
+}

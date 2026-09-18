@@ -53,6 +53,23 @@ namespace EnvelopeCurveParamIDs
     static const juce::String releaseCurve = "releaseCurve";
 }
 
+// 0.2.8: per-track Mute/Solo, toggled from the compact sample cards on the
+// main screen. Plain bools rather than knobs - no ParamInfo/AccentGroup
+// entry, since they are never shown as an Encoder.
+namespace MuteSoloParamIDs
+{
+    static const juce::String mute = "mute";
+    static const juce::String solo = "solo";
+}
+
+// 0.2.8: master bus, applied once after all tracks are summed (see
+// MasterBus in DSP.h/.cpp) - overall output Volume plus a Limiter ceiling.
+namespace MasterParamIDs
+{
+    static const juce::String volume  = "masterVolume";
+    static const juce::String limiter = "masterLimiter";
+}
+
 // Shared with the interactive envelope graph in GUI.cpp so the knob ranges
 // and the on-screen point positions can never drift apart.
 namespace EnvelopeRanges
@@ -75,7 +92,8 @@ enum class AccentGroup
     timing,
     pitchSound,
     ratchetChaos,
-    envelope
+    envelope,
+    master
 };
 
 struct ParamInfo
@@ -124,6 +142,17 @@ inline std::array<ParamInfo, 5> getEnvelopeParamInfoForTrack(int trackIndex)
     } };
 }
 
+// The two MASTER controls (Volume/Limiter) shown next to the Ratchet &
+// Chaos knobs on the main screen.
+inline const std::array<ParamInfo, 2>& getMasterParamInfo()
+{
+    static const std::array<ParamInfo, 2> info = { {
+        { MasterParamIDs::volume,  "Volume",  AccentGroup::master },
+        { MasterParamIDs::limiter, "Limiter", AccentGroup::master }
+    } };
+    return info;
+}
+
 inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
@@ -147,6 +176,15 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         ParamIDs::probability, "Probability",
         juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 100.0f, "%"));
+
+    // 0.2.8: master bus, sits after all tracks are summed (see MasterBus).
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        MasterParamIDs::volume, "Master Volume",
+        juce::NormalisableRange<float>(-24.0f, 12.0f, 0.1f), 0.0f, "dB"));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        MasterParamIDs::limiter, "Master Limiter",
+        juce::NormalisableRange<float>(-24.0f, 0.0f, 0.1f), 0.0f, "dB"));
 
     // Per-track Pitch & Sound + Envelope parameters: 7 controls x kNumTracks samples.
     for (int t = 0; t < kNumTracks; ++t)
@@ -197,6 +235,13 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             perTrackParamID(EnvelopeCurveParamIDs::releaseCurve, t), "Release Curve " + juce::String(t + 1),
             juce::NormalisableRange<float>(-1.0f, 1.0f, 0.001f), 0.0f, ""));
+
+        // 0.2.8: per-track Mute/Solo, toggled from the compact sample cards.
+        params.push_back(std::make_unique<juce::AudioParameterBool>(
+            perTrackParamID(MuteSoloParamIDs::mute, t), "Mute " + juce::String(t + 1), false));
+
+        params.push_back(std::make_unique<juce::AudioParameterBool>(
+            perTrackParamID(MuteSoloParamIDs::solo, t), "Solo " + juce::String(t + 1), false));
     }
 
     return { params.begin(), params.end() };

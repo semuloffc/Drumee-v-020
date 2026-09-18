@@ -50,7 +50,7 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
     // PITCH & SOUND no longer has a section on the main screen - it moved
     // into the internal sample editor panel. Only Timing/Groove and
     // Ratchet/Chaos remain here, plus a small header over the sample row.
-    for (auto* label : { &sectionTiming, &sectionChaos, &sectionSamples })
+    for (auto* label : { &sectionTiming, &sectionChaos, &sectionSamples, &sectionMaster })
     {
         label->setJustificationType(juce::Justification::centredLeft);
         label->setFont(juce::Font(12.0f, juce::Font::bold));
@@ -65,12 +65,22 @@ DrumeeAudioProcessorEditor::DrumeeAudioProcessorEditor(DrumeeAudioProcessor& p)
         encoders.push_back(std::move(encoder));
     }
 
+    // MASTER: overall output Volume + Limiter, sitting below the Ratchet &
+    // Chaos knobs inside that same card - the only spot on the main screen
+    // with spare vertical room, so no new column/card shape is needed.
+    for (auto& info : getMasterParamInfo())
+    {
+        auto encoder = std::make_unique<Encoder>(processor.apvts, info);
+        addAndMakeVisible(*encoder);
+        masterEncoders.push_back(std::move(encoder));
+    }
+
     visualizer = std::make_unique<StepSequencerVisualizer>(processor.sequencer);
     addAndMakeVisible(*visualizer);
 
     for (int i = 0; i < kNumTracks; ++i)
     {
-        auto slot = std::make_unique<SampleSlotComponent>(i, processor.tracks[(size_t) i], true);
+        auto slot = std::make_unique<SampleSlotComponent>(i, processor.tracks[(size_t) i], true, &processor.apvts);
         slot->onLoadRequested = [this](int trackIndex) { loadSample(trackIndex); };
         slot->onFileDropped = [this](int trackIndex, const juce::File& file)
         {
@@ -257,15 +267,29 @@ void DrumeeAudioProcessorEditor::resized()
     auto chaosContent = rightColumn.reduced(14);
     sectionChaos.setBounds(chaosContent.removeFromTop(20));
     chaosContent.removeFromTop(6);
+    for (auto* enc : chaosEncoders)
     {
-        int used = (int) chaosEncoders.size() * encoderHeight + ((int) chaosEncoders.size() - 1) * encoderGap;
-        int topPad = juce::jmax(0, (chaosContent.getHeight() - used) / 2);
-        chaosContent.removeFromTop(topPad);
-        for (auto* enc : chaosEncoders)
-        {
-            enc->setBounds(chaosContent.removeFromTop(encoderHeight));
-            chaosContent.removeFromTop(encoderGap);
-        }
+        enc->setBounds(chaosContent.removeFromTop(encoderHeight));
+        chaosContent.removeFromTop(encoderGap);
+    }
+
+    // MASTER sits directly below Ratchet & Chaos in the same card, using
+    // the vertical room that column has to spare (it has fewer knobs than
+    // Timing/Groove) - same section-label treatment as the other groups,
+    // just smaller knobs so both groups fit without the card growing or
+    // anything overlapping.
+    chaosContent.removeFromTop(4);
+    sectionMaster.setBounds(chaosContent.removeFromTop(18));
+    chaosContent.removeFromTop(6);
+    constexpr int masterEncoderHeight = 100;
+    int masterCellWidth = masterEncoders.empty() ? chaosContent.getWidth()
+                                                  : chaosContent.getWidth() / (int) masterEncoders.size();
+    auto masterRow = chaosContent.removeFromTop(masterEncoderHeight);
+    for (size_t i = 0; i < masterEncoders.size(); ++i)
+    {
+        juce::Rectangle<int> cell(masterRow.getX() + (int) i * masterCellWidth, masterRow.getY(),
+                                   masterCellWidth, masterRow.getHeight());
+        masterEncoders[i]->setBounds(cell.reduced(8, 0));
     }
 
     // The sample editor panel takes over the full plugin width (the area
@@ -364,10 +388,14 @@ void DrumeeAudioProcessorEditor::toggleSampleEditor(bool show, int trackIndexToS
     visualizer->setVisible(! show);
 
     // No side knob columns while the sample editor panel is open - it
-    // takes over their space instead (see resized()/paint()).
+    // takes over their space instead (see resized()/paint()), including
+    // the MASTER knobs that live inside the Ratchet & Chaos card.
     sectionTiming.setVisible(! show);
     sectionChaos.setVisible(! show);
+    sectionMaster.setVisible(! show);
     for (auto& encoder : encoders)
+        encoder->setVisible(! show);
+    for (auto& encoder : masterEncoders)
         encoder->setVisible(! show);
 
     editSamplesButton.setButtonText(show ? "Back to Beat" : "Edit Samples");
