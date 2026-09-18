@@ -125,7 +125,7 @@ private:
     int lastPaintedStep = -1;
 };
 
-class SampleSlotComponent : public juce::Component, public juce::FileDragAndDropTarget
+class SampleSlotComponent : public juce::Component, public juce::FileDragAndDropTarget, public juce::SettableTooltipClient
 {
 public:
     // compact = the small card used in the main window's bottom row.
@@ -175,7 +175,7 @@ private:
 // to reshape the envelope, and animates a small marker sweeping along the
 // curve whenever the sequencer actually triggers that sample.
 // ---------------------------------------------------------------------------
-class EnvelopeVisualizer : public juce::Component, private juce::Timer
+class EnvelopeVisualizer : public juce::Component, private juce::Timer, public juce::SettableTooltipClient
 {
 public:
     EnvelopeVisualizer(juce::AudioProcessorValueTreeState& state, int trackIndex, SampleTrack& trackToUse);
