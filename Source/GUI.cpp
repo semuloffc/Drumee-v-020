@@ -53,13 +53,13 @@ void DrumeeLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int wi
     g.fillEllipse(centre.x - 2.0f, centre.y - 2.0f, 4.0f, 4.0f);
 }
 
-void DrumeeLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
+void DrumeeLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
                                               bool isHighlighted, bool isDown)
 {
     auto bounds = button.getLocalBounds().toFloat().reduced(1.0f);
-    juce::Colour base = DrumeeColours::panel;
+    juce::Colour base = backgroundColour;
     if (isDown)
-        base = DrumeeColours::panelAlt;
+        base = base.darker(0.15f);
     else if (isHighlighted)
         base = base.brighter(0.10f);
 
@@ -445,6 +445,88 @@ void SampleSlotComponent::mouseUp(const juce::MouseEvent& event)
         if (onLoadRequested)
             onLoadRequested(index);
     }
+}
+
+// ---------------------------------------------------------------------------
+// WaveformDisplay
+// ---------------------------------------------------------------------------
+WaveformDisplay::WaveformDisplay(int trackIndex, SampleTrack& trackToUse)
+    : track(trackToUse), accentColour(DrumeeColours::forTrack(trackIndex))
+{
+}
+
+void WaveformDisplay::resized() { rebuildPeaks(); }
+void WaveformDisplay::refresh() { rebuildPeaks(); repaint(); }
+
+void WaveformDisplay::rebuildPeaks()
+{
+    peakMin.clear();
+    peakMax.clear();
+
+    int w = getWidth();
+    int numSamples = track.buffer.getNumSamples();
+    int numChannels = track.buffer.getNumChannels();
+    if (w <= 0 || ! track.loaded || numSamples <= 0 || numChannels <= 0)
+        return;
+
+    peakMin.resize((size_t) w, 0.0f);
+    peakMax.resize((size_t) w, 0.0f);
+
+    for (int x = 0; x < w; ++x)
+    {
+        int64_t startSample = (int64_t) x * numSamples / w;
+        int64_t endSample = juce::jmax(startSample + 1, (int64_t) (x + 1) * numSamples / w);
+        endSample = juce::jmin(endSample, (int64_t) numSamples);
+
+        float mn = 0.0f, mx = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            auto range = track.buffer.findMinMax(ch, (int) startSample, (int) (endSample - startSample));
+            mn = juce::jmin(mn, range.getStart());
+            mx = juce::jmax(mx, range.getEnd());
+        }
+        peakMin[(size_t) x] = mn;
+        peakMax[(size_t) x] = mx;
+    }
+}
+
+void WaveformDisplay::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(DrumeeColours::panelAlt);
+    g.fillRoundedRectangle(bounds, 6.0f);
+    g.setColour(DrumeeColours::outline);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 6.0f, 1.0f);
+
+    float midY = bounds.getCentreY();
+
+    if (! track.loaded || peakMax.empty())
+    {
+        g.setColour(DrumeeColours::outline.withAlpha(0.6f));
+        g.drawLine(bounds.getX() + 8.0f, midY, bounds.getRight() - 8.0f, midY, 1.0f);
+        g.setColour(DrumeeColours::textMuted);
+        g.setFont(juce::Font(11.0f));
+        g.drawText("No sample loaded", getLocalBounds(), juce::Justification::centred);
+        return;
+    }
+
+    float halfHeight = bounds.getHeight() * 0.5f - 5.0f;
+
+    juce::Path wave;
+    wave.startNewSubPath(bounds.getX(), midY - peakMax[0] * halfHeight);
+    for (size_t x = 1; x < peakMax.size(); ++x)
+        wave.lineTo(bounds.getX() + (float) x, midY - peakMax[x] * halfHeight);
+    for (size_t x = peakMin.size(); x-- > 0;)
+        wave.lineTo(bounds.getX() + (float) x, midY - peakMin[x] * halfHeight);
+    wave.closeSubPath();
+
+    g.setColour(accentColour.withAlpha(0.30f));
+    g.fillPath(wave);
+    g.setColour(accentColour.withAlpha(0.65f));
+    g.strokePath(wave, juce::PathStrokeType(1.0f));
+
+    g.setColour(DrumeeColours::outline.withAlpha(0.5f));
+    g.drawLine(bounds.getX(), midY, bounds.getRight(), midY, 1.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +942,9 @@ SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorVal
     sectionEnvelope.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
     addAndMakeVisible(sectionEnvelope);
 
+    waveformDisplay = std::make_unique<WaveformDisplay>(trackIndex, trackToUse);
+    addAndMakeVisible(*waveformDisplay);
+
     envelopeVisualizer = std::make_unique<EnvelopeVisualizer>(state, trackIndex, trackToUse);
     addAndMakeVisible(*envelopeVisualizer);
 
@@ -877,6 +962,8 @@ void SampleEditorContent::refresh()
 {
     if (slot != nullptr)
         slot->refresh();
+    if (waveformDisplay != nullptr)
+        waveformDisplay->refresh();
 }
 
 void SampleEditorContent::resized()
@@ -884,14 +971,14 @@ void SampleEditorContent::resized()
     constexpr int margin = 20;
     auto bounds = getLocalBounds().reduced(margin);
 
-    sampleNameLabel.setBounds(bounds.removeFromTop(22));
+    sampleNameLabel.setBounds(bounds.removeFromTop(20));
     bounds.removeFromTop(6);
 
     // Top row: file slot (left) and the compact Pitch & Sound knobs (right)
-    // share one row now, freeing most of the page's height for the
-    // envelope section below - the main showcase of this update.
-    auto topRow = bounds.removeFromTop(70);
-    bounds.removeFromTop(12);
+    // share one row, leaving most of the page's height for the waveform +
+    // envelope block below - the main showcase of this page.
+    auto topRow = bounds.removeFromTop(62);
+    bounds.removeFromTop(10);
 
     auto slotArea = topRow.removeFromLeft((int) (topRow.getWidth() * 0.56f));
     slot->setBounds(slotArea);
@@ -908,13 +995,21 @@ void SampleEditorContent::resized()
         pitchEncoders[i]->setBounds(cell.reduced(10, 0));
     }
 
-    sectionEnvelope.setBounds(bounds.removeFromTop(18));
+    sectionEnvelope.setBounds(bounds.removeFromTop(16));
+    bounds.removeFromTop(6);
+
+    // Waveform strip shares the envelope graph's exact x-position and width
+    // (computed once here) so the two form one aligned block - the sample's
+    // content sits directly above the envelope shaping it.
+    int graphWidth = (int) (bounds.getWidth() * 0.56f);
+    auto waveformArea = bounds.removeFromTop(46);
+    waveformDisplay->setBounds(waveformArea.getX(), waveformArea.getY(), graphWidth, waveformArea.getHeight());
     bounds.removeFromTop(8);
 
-    // Envelope section: the interactive graph takes the left ~56% of the
-    // remaining width, its five knobs (Attack/Decay/Sustain/Release/Volume)
-    // fill the rest as a single row so nothing has to wrap or overlap.
-    auto graphArea = bounds.removeFromLeft((int) (bounds.getWidth() * 0.56f));
+    // Envelope section: the interactive graph takes the same left column as
+    // the waveform above it, its five knobs (Attack/Decay/Sustain/Release/
+    // Volume) fill the rest as a single row so nothing has to wrap or overlap.
+    auto graphArea = bounds.removeFromLeft(graphWidth);
     envelopeVisualizer->setBounds(graphArea.reduced(0, 2));
 
     bounds.removeFromLeft(16);
@@ -957,7 +1052,13 @@ SampleEditorPanel::SampleEditorPanel(juce::AudioProcessorValueTreeState& state, 
     for (int i = 0; i < kNumTracks; ++i)
         trackNames[(size_t) i] = tracksToUse[(size_t) i].name;
 
-    titleLabel.setFont(juce::Font(14.0f, juce::Font::bold));
+    titlePrefixLabel.setText("EDIT SAMPLES \xe2\x80\x94", juce::dontSendNotification);
+    titlePrefixLabel.setFont(juce::Font(14.0f, juce::Font::bold));
+    titlePrefixLabel.setJustificationType(juce::Justification::centredLeft);
+    titlePrefixLabel.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
+    addAndMakeVisible(titlePrefixLabel);
+
+    titleLabel.setFont(juce::Font(15.0f, juce::Font::bold));
     titleLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(titleLabel);
 
@@ -1001,8 +1102,11 @@ void SampleEditorPanel::showTrack(int trackIndex)
 
 void SampleEditorPanel::updateTitle()
 {
-    titleLabel.setText("EDIT SAMPLES — " + trackNames[(size_t) currentTrack].toUpperCase(),
-                        juce::dontSendNotification);
+    // "EDIT SAMPLES —" stays a constant, neutral-coloured label; only the
+    // sample name itself is set in that track's accent colour, so the
+    // colour change actually reads as "this is the sample being edited"
+    // instead of tinting the whole static heading.
+    titleLabel.setText(trackNames[(size_t) currentTrack].toUpperCase(), juce::dontSendNotification);
     titleLabel.setColour(juce::Label::textColourId, DrumeeColours::forTrack(currentTrack));
 }
 
@@ -1033,6 +1137,10 @@ void SampleEditorPanel::resized()
     auto headerRow = bounds.removeFromTop(24);
     closeButton.setBounds(headerRow.removeFromLeft(28));
     headerRow.removeFromLeft(8);
+
+    int prefixWidth = (int) titlePrefixLabel.getFont().getStringWidthFloat(titlePrefixLabel.getText()) + 7;
+    titlePrefixLabel.setBounds(headerRow.removeFromLeft(prefixWidth));
+    headerRow.removeFromLeft(6);
     titleLabel.setBounds(headerRow);
 
     bounds.removeFromTop(10);

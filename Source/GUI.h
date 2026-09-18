@@ -169,6 +169,28 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Static peak waveform for one sample, drawn directly above that sample's
+// envelope graph in its own track colour so the two form one connected
+// visual block. Rebuilt whenever a new file is loaded into the track.
+// ---------------------------------------------------------------------------
+class WaveformDisplay : public juce::Component
+{
+public:
+    WaveformDisplay(int trackIndex, SampleTrack& trackToUse);
+
+    void paint(juce::Graphics&) override;
+    void resized() override;
+    void refresh();
+
+private:
+    void rebuildPeaks();
+
+    SampleTrack& track;
+    juce::Colour accentColour;
+    std::vector<float> peakMin, peakMax;
+};
+
+// ---------------------------------------------------------------------------
 // Interactive ADSR envelope graph for one sample's page in the editor panel.
 // Draws the Attack/Decay/Sustain/Release shape in that sample's own track
 // colour, lets the person drag its three breakpoints directly (Serum-style)
@@ -261,6 +283,7 @@ private:
     std::unique_ptr<SampleSlotComponent> slot;
     std::vector<std::unique_ptr<Encoder>> pitchEncoders;
     std::vector<std::unique_ptr<Encoder>> envelopeEncoders;
+    std::unique_ptr<WaveformDisplay> waveformDisplay;
     std::unique_ptr<EnvelopeVisualizer> envelopeVisualizer;
 
     // Recessed "well" backgrounds behind the two knob rows, matching the
@@ -299,6 +322,7 @@ private:
 
     int currentTrack = 0;
     std::array<juce::String, kNumTracks> trackNames;
+    juce::Label titlePrefixLabel;
     juce::Label titleLabel;
     IconButton closeButton { "Back to sequencer", IconButton::Icon::Back };
     std::array<std::unique_ptr<juce::TextButton>, kNumTracks> tabButtons;
