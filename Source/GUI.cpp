@@ -83,19 +83,27 @@ void IconButton::paintButton(juce::Graphics& g, bool isHighlighted, bool isDown)
 {
     auto bounds = getLocalBounds().toFloat().reduced(1.0f);
 
+    // Toggle-style icon buttons (Reverse) light up fully in their accent
+    // colour while engaged, the same visual language Mute/Solo already use
+    // on the compact sample cards - a glance tells you the state.
+    bool isOn = getToggleState();
+
     juce::Colour base = DrumeeColours::panel;
-    if (isDown)
+    if (isOn)
+        base = accentColour;
+    else if (isDown)
         base = DrumeeColours::panelAlt;
     else if (isHighlighted)
         base = base.brighter(0.10f);
 
     g.setColour(base);
     g.fillRoundedRectangle(bounds, 4.0f);
-    g.setColour(DrumeeColours::outline);
+    g.setColour(isOn ? accentColour : DrumeeColours::outline);
     g.drawRoundedRectangle(bounds.reduced(0.5f), 4.0f, 1.0f);
 
     auto glyph = bounds.reduced(bounds.getWidth() * 0.28f, bounds.getHeight() * 0.28f);
-    juce::Colour ink = isHighlighted || isDown ? DrumeeColours::textPrimary : DrumeeColours::textSecondary;
+    juce::Colour ink = isOn ? DrumeeColours::textInverse
+                             : (isHighlighted || isDown ? DrumeeColours::textPrimary : DrumeeColours::textSecondary);
     g.setColour(ink);
 
     if (icon == Icon::Save)
@@ -140,7 +148,7 @@ void IconButton::paintButton(juce::Graphics& g, bool isHighlighted, bool isDown)
         g.drawLine(centre.x - armLength, centre.y, centre.x + armLength, centre.y, 1.6f);
         g.drawLine(centre.x, centre.y - armLength, centre.x, centre.y + armLength, 1.6f);
     }
-    else // Icon::Back
+    else if (icon == Icon::Back)
     {
         auto centre = glyph.getCentre();
         float armLength = juce::jmin(glyph.getWidth(), glyph.getHeight()) * 0.5f;
@@ -152,6 +160,37 @@ void IconButton::paintButton(juce::Graphics& g, bool isHighlighted, bool isDown)
         arrow.lineTo(centre.x - armLength * 0.35f, centre.y + armLength * 0.65f);
         g.strokePath(arrow, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
+    else // Icon::Reverse
+    {
+        // Two play-triangles, mirrored towards each other across the
+        // glyph's centre - reads as "time-reversed" without inventing a
+        // new visual language on top of the existing flat glyph set.
+        float midX = glyph.getCentreX();
+        float top = glyph.getY();
+        float bottom = glyph.getBottom();
+        float halfGap = juce::jmax(1.5f, glyph.getWidth() * 0.06f);
+        float triWidth = glyph.getWidth() * 0.5f - halfGap;
+
+        juce::Path left;
+        left.startNewSubPath(midX - halfGap - triWidth, top);
+        left.lineTo(midX - halfGap - triWidth, bottom);
+        left.lineTo(midX - halfGap, glyph.getCentreY());
+        left.closeSubPath();
+        g.fillPath(left);
+
+        juce::Path right;
+        right.startNewSubPath(midX + halfGap + triWidth, top);
+        right.lineTo(midX + halfGap + triWidth, bottom);
+        right.lineTo(midX + halfGap, glyph.getCentreY());
+        right.closeSubPath();
+        g.fillPath(right);
+    }
+}
+
+void IconButton::setAccentColour(juce::Colour newColour)
+{
+    accentColour = newColour;
+    repaint();
 }
 
 Encoder::Encoder(juce::AudioProcessorValueTreeState& state, const ParamInfo& info)
@@ -490,9 +529,12 @@ void SampleSlotComponent::mouseUp(const juce::MouseEvent& event)
 // ---------------------------------------------------------------------------
 // WaveformDisplay
 // ---------------------------------------------------------------------------
-WaveformDisplay::WaveformDisplay(int trackIndex, SampleTrack& trackToUse)
-    : track(trackToUse), accentColour(DrumeeColours::forTrack(trackIndex))
+WaveformDisplay::WaveformDisplay(int trackIndex, SampleTrack& trackToUse, std::atomic<float>* reversedParam)
+    : track(trackToUse), accentColour(DrumeeColours::forTrack(trackIndex)), reversedRaw(reversedParam)
 {
+    if (reversedRaw != nullptr)
+        reversed = reversedRaw->load() > 0.5f;
+
     startTimerHz(30);
 }
 
@@ -503,6 +545,16 @@ void WaveformDisplay::refresh() { rebuildPeaks(); repaint(); }
 
 void WaveformDisplay::timerCallback()
 {
+    if (reversedRaw != nullptr)
+    {
+        bool nowReversed = reversedRaw->load() > 0.5f;
+        if (nowReversed != reversed)
+        {
+            reversed = nowReversed;
+            repaint();
+        }
+    }
+
     int count = track.triggerCount.load(std::memory_order_relaxed);
     if (count != lastSeenTriggerCount)
     {
@@ -576,12 +628,18 @@ void WaveformDisplay::paint(juce::Graphics& g)
 
     float halfHeight = bounds.getHeight() * 0.5f - 5.0f;
 
+    // Reversed: read the peak columns back-to-front instead of redrawing
+    // with new data, so the picture always shows what plays first on the
+    // left - matching the direction the sequencer will actually read it in.
+    size_t n = peakMax.size();
+    auto peakIndex = [n, this](size_t x) { return reversed ? (n - 1 - x) : x; };
+
     juce::Path wave;
-    wave.startNewSubPath(bounds.getX(), midY - peakMax[0] * halfHeight);
-    for (size_t x = 1; x < peakMax.size(); ++x)
-        wave.lineTo(bounds.getX() + (float) x, midY - peakMax[x] * halfHeight);
+    wave.startNewSubPath(bounds.getX(), midY - peakMax[peakIndex(0)] * halfHeight);
+    for (size_t x = 1; x < n; ++x)
+        wave.lineTo(bounds.getX() + (float) x, midY - peakMax[peakIndex(x)] * halfHeight);
     for (size_t x = peakMin.size(); x-- > 0;)
-        wave.lineTo(bounds.getX() + (float) x, midY - peakMin[x] * halfHeight);
+        wave.lineTo(bounds.getX() + (float) x, midY - peakMin[peakIndex(x)] * halfHeight);
     wave.closeSubPath();
 
     g.setColour(accentColour.withAlpha(0.30f));
@@ -1136,12 +1194,20 @@ SampleEditorContent::SampleEditorContent(int trackIndex, juce::AudioProcessorVal
         pitchEncoders.push_back(std::move(encoder));
     }
 
+    reverseToggle = std::make_unique<IconButton>("Reverse sample playback", IconButton::Icon::Reverse);
+    reverseToggle->setClickingTogglesState(true);
+    reverseToggle->setAccentColour(knobAccent);
+    addAndMakeVisible(*reverseToggle);
+    reverseAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        state, perTrackParamID(ReverseParamIDs::reverse, trackIndex), *reverseToggle);
+
     sectionEnvelope.setJustificationType(juce::Justification::centredLeft);
     sectionEnvelope.setFont(juce::Font(12.0f, juce::Font::bold));
     sectionEnvelope.setColour(juce::Label::textColourId, DrumeeColours::textSecondary);
     addAndMakeVisible(sectionEnvelope);
 
-    waveformDisplay = std::make_unique<WaveformDisplay>(trackIndex, trackToUse);
+    waveformDisplay = std::make_unique<WaveformDisplay>(
+        trackIndex, trackToUse, state.getRawParameterValue(perTrackParamID(ReverseParamIDs::reverse, trackIndex)));
     addAndMakeVisible(*waveformDisplay);
 
     envelopeVisualizer = std::make_unique<EnvelopeVisualizer>(state, trackIndex, trackToUse);
@@ -1184,6 +1250,16 @@ void SampleEditorContent::resized()
     topRow.removeFromTop(4);
     pitchWellBounds = topRow;
     auto pitchRow = topRow;
+
+    // Reverse toggle claims a fixed-width slice on the right of the well
+    // before the Pitch Rand/Velocity knobs divide up what's left, so it
+    // never crowds or resizes them.
+    constexpr int reverseSlotWidth = 40;
+    auto reverseArea = pitchRow.removeFromRight(reverseSlotWidth);
+    pitchRow.removeFromRight(6);
+    int reverseSize = juce::jmin(reverseSlotWidth - 4, reverseArea.getHeight());
+    reverseToggle->setBounds(reverseArea.withSizeKeepingCentre(reverseSize, reverseSize));
+
     int pitchCellWidth = pitchEncoders.empty() ? pitchRow.getWidth() : pitchRow.getWidth() / (int) pitchEncoders.size();
     for (size_t i = 0; i < pitchEncoders.size(); ++i)
     {

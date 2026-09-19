@@ -4,10 +4,10 @@ void SamplePlayerVoice::start(const juce::AudioBuffer<float>* buf, double source
                                double outputSampleRate, float pitchSemitones, float gain,
                                float attackMs, float decayMs, float sustainLevel, float releaseMs,
                                float attackCurve, float decayCurve, float releaseCurve,
-                               int startDelaySamples)
+                               int startDelaySamples, bool reversed)
 {
     sourceBuffer = buf;
-    position = 0.0;
+    reversedPlayback = reversed;
     ratio = std::pow(2.0, pitchSemitones / 12.0) * (sourceSampleRate / outputSampleRate);
     gainLevel = gain;
     delaySamples = juce::jmax(0, startDelaySamples);
@@ -22,6 +22,13 @@ void SamplePlayerVoice::start(const juce::AudioBuffer<float>* buf, double source
     envReleaseCurve = releaseCurve;
 
     int srcLength = sourceBuffer != nullptr ? sourceBuffer->getNumSamples() : 0;
+
+    // Forward playback walks the buffer 0 -> srcLength-1; reversed walks it
+    // srcLength-1 -> 0. The interpolated read in renderNextBlock() only
+    // cares about the current fractional position, not which way it is
+    // moving, so no separate reversed-read path is needed there.
+    position = reversedPlayback ? juce::jmax(0.0, (double) srcLength - 1.0) : 0.0;
+
     double playbackDurationSamples = (ratio > 0.0 && srcLength > 1)
         ? (double) (srcLength - 1) / ratio
         : 0.0;
@@ -96,7 +103,8 @@ void SamplePlayerVoice::renderNextBlock(juce::AudioBuffer<float>& output, int st
             continue;
         }
 
-        if (position >= (double) (srcLength - 1))
+        bool reachedEnd = reversedPlayback ? (position <= 0.0) : (position >= (double) (srcLength - 1));
+        if (reachedEnd)
         {
             isActive = false;
             break;
@@ -123,7 +131,7 @@ void SamplePlayerVoice::renderNextBlock(juce::AudioBuffer<float>& output, int st
             output.addSample(ch, startSample + i, sample * gainLevel * (float) envGain);
         }
 
-        position += ratio;
+        position += reversedPlayback ? -ratio : ratio;
         envElapsedSamples += 1.0;
     }
 }
@@ -145,14 +153,14 @@ bool SampleTrack::loadFile(const juce::File& file, juce::AudioFormatManager& for
 void SampleTrack::trigger(double outputSampleRate, float pitchSemitones, float velocityGain,
                            float attackMs, float decayMs, float sustainLevel, float releaseMs,
                            float attackCurve, float decayCurve, float releaseCurve,
-                           int startDelaySamples)
+                           int startDelaySamples, bool reversed)
 {
     if (! loaded)
         return;
 
     voices[nextVoice].start(&buffer, sourceSampleRate, outputSampleRate, pitchSemitones, velocityGain,
                              attackMs, decayMs, sustainLevel, releaseMs,
-                             attackCurve, decayCurve, releaseCurve, startDelaySamples);
+                             attackCurve, decayCurve, releaseCurve, startDelaySamples, reversed);
     nextVoice = (nextVoice + 1) % kMaxVoicesPerTrack;
     triggerCount.fetch_add(1, std::memory_order_relaxed);
 }

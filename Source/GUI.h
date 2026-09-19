@@ -86,14 +86,20 @@ public:
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { Save, New, Back };
+    enum class Icon { Save, New, Back, Reverse };
 
     IconButton(const juce::String& tooltipText, Icon iconToUse);
 
     void paintButton(juce::Graphics&, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
 
+    // Only used by toggle-style icon buttons (currently Reverse): fills the
+    // button with this colour while its toggle state is on, matching how
+    // the Mute/Solo cards light up in their own accent when engaged.
+    void setAccentColour(juce::Colour newColour);
+
 private:
     Icon icon;
+    juce::Colour accentColour { DrumeeColours::accent1 };
 };
 
 class Encoder : public juce::Component
@@ -189,7 +195,11 @@ private:
 class WaveformDisplay : public juce::Component, private juce::Timer
 {
 public:
-    WaveformDisplay(int trackIndex, SampleTrack& trackToUse);
+    // reversedParam: raw APVTS value for this track's Reverse toggle
+    // (nullable). Polled the same way EnvelopeVisualizer polls its envelope
+    // parameters, so the waveform mirrors itself whenever Reverse is
+    // engaged - the picture always matches what actually plays.
+    WaveformDisplay(int trackIndex, SampleTrack& trackToUse, std::atomic<float>* reversedParam = nullptr);
     ~WaveformDisplay() override;
 
     void paint(juce::Graphics&) override;
@@ -203,6 +213,9 @@ private:
     SampleTrack& track;
     juce::Colour accentColour;
     std::vector<float> peakMin, peakMax;
+
+    std::atomic<float>* reversedRaw = nullptr;
+    bool reversed = false;
 
     // Same trigger-detection/sweep approach as EnvelopeVisualizer: poll the
     // track's atomic hit counter and, on a new hit, sweep a playhead across
@@ -329,6 +342,11 @@ private:
     std::vector<std::unique_ptr<Encoder>> envelopeEncoders;
     std::unique_ptr<WaveformDisplay> waveformDisplay;
     std::unique_ptr<EnvelopeVisualizer> envelopeVisualizer;
+
+    // 0.2.9: Reverse toggle, sat at the right edge of the PITCH & SOUND row
+    // next to the Pitch Rand/Velocity knobs it shares a section with.
+    std::unique_ptr<IconButton> reverseToggle;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> reverseAttachment;
 
     // Recessed "well" backgrounds behind the two knob rows, matching the
     // panelAlt treatment used elsewhere - captured in resized() so paint()

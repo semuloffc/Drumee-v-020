@@ -75,6 +75,7 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
     std::array<float, kNumTracks> attackCurve {};
     std::array<float, kNumTracks> decayCurve {};
     std::array<float, kNumTracks> releaseCurve {};
+    std::array<bool, kNumTracks> reversed {};
 
     for (int t = 0; t < kNumTracks; ++t)
     {
@@ -88,6 +89,7 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
         attackCurve[(size_t) t]  = apvts.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::attackCurve, t))->load();
         decayCurve[(size_t) t]   = apvts.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::decayCurve, t))->load();
         releaseCurve[(size_t) t] = apvts.getRawParameterValue(perTrackParamID(EnvelopeCurveParamIDs::releaseCurve, t))->load();
+        reversed[(size_t) t]     = apvts.getRawParameterValue(perTrackParamID(ReverseParamIDs::reverse, t))->load() > 0.5f;
     }
 
     double outputSampleRate = getSampleRate();
@@ -96,7 +98,7 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
     sequencer.process(buffer.getNumSamples(), hostBpm, hostIsPlaying,
                        nudge, swing, humanize, pitchRand, velocity, ratchet, probability,
                        [&tracksRef, outputSampleRate, &attack, &decay, &sustain, &release, &volume,
-                        &attackCurve, &decayCurve, &releaseCurve]
+                        &attackCurve, &decayCurve, &releaseCurve, &reversed]
                        (int track, int sampleOffset, float vel, float pitchOffset)
                        {
                            float trackGain = vel * volume[(size_t) track];
@@ -105,7 +107,7 @@ void DrumeeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
                                                               sustain[(size_t) track], release[(size_t) track],
                                                               attackCurve[(size_t) track], decayCurve[(size_t) track],
                                                               releaseCurve[(size_t) track],
-                                                              sampleOffset);
+                                                              sampleOffset, reversed[(size_t) track]);
                        });
 
     // Mute/Solo: each track renders into the scratch buffer first, then

@@ -37,11 +37,15 @@ public:
     // amplitude envelope. There is no note-off in this drum sampler, so
     // Release is scheduled to land at the end of the sample's own playback
     // length (or right after Decay if the sample is too short for that).
+    // reversed: 0.2.9, plays the source buffer from its end back to its
+    // start instead of start to end. Timing/envelope maths is unaffected -
+    // only the direction position advances each sample changes (see
+    // renderNextBlock()).
     void start(const juce::AudioBuffer<float>* buffer, double sourceSampleRate,
                 double outputSampleRate, float pitchSemitones, float gain,
                 float attackMs, float decayMs, float sustainLevel, float releaseMs,
                 float attackCurve, float decayCurve, float releaseCurve,
-                int startDelaySamples);
+                int startDelaySamples, bool reversed);
     void renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples);
     bool active() const { return isActive; }
 
@@ -50,6 +54,7 @@ private:
 
     const juce::AudioBuffer<float>* sourceBuffer = nullptr;
     bool isActive = false;
+    bool reversedPlayback = false;
     double position = 0.0;
     double ratio = 1.0;
     float gainLevel = 1.0f;
@@ -84,7 +89,7 @@ public:
     void trigger(double outputSampleRate, float pitchSemitones, float velocityGain,
                  float attackMs, float decayMs, float sustainLevel, float releaseMs,
                  float attackCurve, float decayCurve, float releaseCurve,
-                 int startDelaySamples);
+                 int startDelaySamples, bool reversed);
     void renderNextBlock(juce::AudioBuffer<float>& output, int startSample, int numSamples);
 
 private:

@@ -70,6 +70,14 @@ namespace MasterParamIDs
     static const juce::String limiter = "masterLimiter";
 }
 
+// 0.2.9: per-track Reverse, toggled from that sample's page in the editor
+// panel. A plain bool, like Mute/Solo - no ParamInfo/AccentGroup entry,
+// since it is shown as a toggle rather than an Encoder.
+namespace ReverseParamIDs
+{
+    static const juce::String reverse = "reverse";
+}
+
 // Shared with the interactive envelope graph in GUI.cpp so the knob ranges
 // and the on-screen point positions can never drift apart.
 namespace EnvelopeRanges
@@ -242,6 +250,11 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 
         params.push_back(std::make_unique<juce::AudioParameterBool>(
             perTrackParamID(MuteSoloParamIDs::solo, t), "Solo " + juce::String(t + 1), false));
+
+        // 0.2.9: per-track Reverse, toggled from that sample's page in the
+        // editor panel - flips the sample's playback direction.
+        params.push_back(std::make_unique<juce::AudioParameterBool>(
+            perTrackParamID(ReverseParamIDs::reverse, t), "Reverse " + juce::String(t + 1), false));
     }
 
     return { params.begin(), params.end() };
