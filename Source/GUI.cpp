@@ -256,8 +256,27 @@ void StepSequencerVisualizer::paint(juce::Graphics& g)
     int playStep = sequencer.currentStep.load();
     auto area = getLocalBounds().toFloat().reduced(14.0f);
 
+    // 0.2.9.5: the 2nd and 4th beat (steps 4-7 and 12-15 of 16) get a
+    // faint wash over the panel background, the same "backbeat" column
+    // shading most DAW/hardware step sequencers use so the ear and the
+    // eye agree on where the groove's 2 and 4 land - no new colour, just
+    // an existing palette tone at very low alpha.
+    constexpr int stepsPerBeat = kNumSteps / 4;
+
     for (int step = 0; step < kNumSteps; ++step)
     {
+        int beatIndex = step / stepsPerBeat;
+        bool isBackbeat = (beatIndex == 1 || beatIndex == 3);
+
+        if (isBackbeat)
+        {
+            auto beatBounds = getCellBounds(0, step);
+            beatBounds.setY(area.getY());
+            beatBounds.setHeight(area.getHeight());
+            g.setColour(DrumeeColours::textPrimary.withAlpha(0.035f));
+            g.fillRect(beatBounds);
+        }
+
         bool isPlayColumn = (step == playStep);
 
         if (isPlayColumn)
@@ -278,7 +297,8 @@ void StepSequencerVisualizer::paint(juce::Graphics& g)
             bool active = sequencer.pattern[(size_t) step].active[track];
             float vel = sequencer.pattern[(size_t) step].velocity[track];
 
-            juce::Colour cellColour = active ? DrumeeColours::forTrack(track) : DrumeeColours::panelAlt;
+            juce::Colour cellColour = active ? DrumeeColours::forTrack(track)
+                                              : (isBackbeat ? DrumeeColours::panelAlt.brighter(0.05f) : DrumeeColours::panelAlt);
             float alpha = active ? juce::jmap(vel, 0.5f, 1.0f) : 1.0f;
             float cornerSize = juce::jmin(cell.getWidth(), cell.getHeight()) * 0.3f;
 
